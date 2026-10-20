@@ -2,7 +2,7 @@ import { LIVE_LAYOUTS, eventPlacement, hitEvent, routeTarget, livePose, alpha } 
 import { legPose, heartbeatAt } from './spider.js';
 import { probePose } from './probes.js';
 
-const ROUTES=['code','model','you'];
+const ROUTES=['code','model','ext','you'];
 const STATUS={pending:'等待',running:'进行中',completed:'已完成',failed:'失败'};
 const MONO='Consolas, "Cascadia Code", monospace';
 export class LiveRenderer {

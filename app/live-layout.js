@@ -14,8 +14,8 @@ export function hitEvent(regions,x,y) {
   return regions.find(region=>x>=region.x && x<=region.x+region.w && y>=region.y-region.h/2 && y<=region.y+region.h/2)?.event.id ?? null;
 }
 export function routeTarget(layout,route) {
-  const s=layout.scene,index=['code','model','you'].indexOf(route);
-  return {x:s.x+s.w*.875,y:s.y+s.h*(.23+Math.max(0,index)*.27)};
+  const s=layout.scene,index=['code','model','ext','you'].indexOf(route);
+  return {x:s.x+s.w*.875,y:s.y+s.h*(.15+Math.max(0,index)*.235)};
 }
 
 // Closed analytic orbit: position AND velocity join smoothly, at any elapsed time.

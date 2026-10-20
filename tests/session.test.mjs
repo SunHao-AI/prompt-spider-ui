@@ -19,7 +19,7 @@ test('event IDs update rather than duplicate, and absent scores remain unknown',
   setTime(1); store.updateEvents(id,[{id:'search',label:'检索资料',route:'code',status:'running'}]);
   setTime(2); store.updateEvents(id,[{id:'search',status:'completed'},{id:'write',label:'生成草稿',route:'model',score:.8}]);
   const current=store.snapshot(id);
-  assert.deepEqual(current.counts,{code:1,model:1,you:0}); assert.equal(current.events.length,2);
+  assert.deepEqual(current.counts,{code:1,model:1,ext:0,you:0}); assert.equal(current.events.length,2);
   assert.equal(current.events[0].score,null); assert.equal(current.events[0].firstAt,1); assert.equal(current.events[0].status,'completed');
   const revision=current.revision; store.updateEvents(id,[{id:'search',status:'completed'}]); assert.equal(store.snapshot(id).revision,revision);
 });
@@ -59,7 +59,7 @@ test('replay retains status and appearance changes; imported aggregates are reco
   assert.equal(projectRecord(record,3.5).config.title,'Changed');
   assert.equal(projectRecord(record,4).events[0].route,'you');
   const forged=structuredClone(record); forged.counts={code:999,model:999,you:999};
-  const normalized=validateRecord(forged); assert.deepEqual(normalized.counts,{code:0,model:0,you:1});
+  const normalized=validateRecord(forged); assert.deepEqual(normalized.counts,{code:0,model:0,ext:0,you:1});
   const restored=new SessionStore().importRecord(normalized); assert.equal(restored.status,'completed');
   for(const time of [0,1,2.5,3,4]) assert.deepEqual(projectRecord(normalized,time),projectRecord(record,time));
 });

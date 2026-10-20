@@ -11,7 +11,7 @@ import { createPreviewHub } from './hub.mjs';
 import { Exporter } from './exporter.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const route = z.enum(['code', 'model', 'you']);
+const route = z.enum(['code', 'model', 'ext', 'you']);
 const terminal = z.enum(['completed', 'failed', 'cancelled']);
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const routeConfig = z.object({ label: z.string().min(1).max(40).optional(), color: color.optional() }).strict();
@@ -19,7 +19,7 @@ const config = z.object({
   title: z.string().min(1).max(80).optional(), subtitle: z.string().max(160).optional(), modelName: z.string().min(1).max(80).optional(),
   layout: z.enum(['portrait', 'landscape', 'square']).optional(), unit: z.enum(['task', 'word']).optional(), prompt: z.string().max(12000).optional(),
   expectedTotal: z.number().int().min(0).max(10000).nullable().optional(),
-  routes: z.object({ code: routeConfig.optional(), model: routeConfig.optional(), you: routeConfig.optional() }).strict().optional(),
+  routes: z.object({ code: routeConfig.optional(), model: routeConfig.optional(), ext: routeConfig.optional(), you: routeConfig.optional() }).strict().optional(),
   theme: z.object(Object.fromEntries(Object.keys(DEFAULT_CONFIG.theme).map(key => [key, color.optional()]))).strict().optional()
 }).strict();
 const event = z.object({
@@ -31,12 +31,12 @@ const event = z.object({
 }).strict();
 const command = z.object({
   action: z.enum(['play', 'pause', 'seek', 'restart', 'follow_live']).optional(), position: z.number().min(0).optional(), speed: z.number().min(0.5).max(4).optional(),
-  loop: z.boolean().optional(), routeFilter: z.enum(['all', 'code', 'model', 'you']).optional(), page: z.number().int().min(0).optional()
+  loop: z.boolean().optional(), routeFilter: z.enum(['all', 'code', 'model', 'ext', 'you']).optional(), page: z.number().int().min(0).optional()
 }).strict();
 const sessionId = z.string().min(1).max(120).describe('id returned by spider_create_session or spider_import_session');
 const object = fields => z.object(fields).strict();
 const resultSchema = z.record(z.string(), z.unknown());
-const guide = `# Prompt Spider UI MCP\n\n1. Call spider_create_session with optional config; open its previewUrl in your browser.\n2. Report only real, public-safe task information through spider_update_events, 1–100 events per call. New IDs require label and route; reuse IDs for progress changes. code = deterministic tool/rule work, model = model work, you = human action. Scores are optional and are never invented.\n3. spider_configure_session changes title, route labels/colors, theme and portrait/landscape/square layout. Word mode needs prompt and zero-based tokenIndex. Prompt/unit cannot change after events arrive.\n4. Pause/seek only changes the view; ingestion continues. Use follow_live to return.\n5. spider_complete_session freezes duration but preserves data. spider_export_session saves a portable JSON under the configured export root; spider_import_session restores it as a read-only replay under a new ID.\n6. spider_export_project creates a new standalone editable directory; includeMcp defaults true, includeReplay defaults false. Pass sessionId for its theme and optional recording.\n7. spider_close_session releases memory; it is different from completing a session.\n\nOrdinary UI: npm start (no dependencies). MCP: npm --prefix mcp ci, then configure your host to launch node /absolute/project/mcp/server.mjs over stdio. Optional --export-root /absolute/directory restricts explicit disk writes. Only new leaf file/directory names are accepted; existing exports are never overwritten.\n\nLimits: 20 sessions, 10,000 unique events/session, 16 MiB update log/session, paginated get up to 200 events. All sessions are process-local and in memory until you export. Stopping MCP closes its previews. No automatic Agent instrumentation, no cloud services. Never report keys, credentials or private chain of thought.\n`;
+const guide = `# Prompt Spider UI MCP\n\n1. Call spider_create_session with optional config; open its previewUrl in your browser.\n2. Report only real, public-safe task information through spider_update_events, 1–100 events per call. New IDs require label and route; reuse IDs for progress changes. code = deterministic tool/rule work, model = model work, ext = external source lookup, you = human action. Scores are optional and are never invented.\n3. spider_configure_session changes title, route labels/colors, theme and portrait/landscape/square layout. Word mode needs prompt and zero-based tokenIndex. Prompt/unit cannot change after events arrive.\n4. Pause/seek only changes the view; ingestion continues. Use follow_live to return.\n5. spider_complete_session freezes duration but preserves data. spider_export_session saves a portable JSON under the configured export root; spider_import_session restores it as a read-only replay under a new ID.\n6. spider_export_project creates a new standalone editable directory; includeMcp defaults true, includeReplay defaults false. Pass sessionId for its theme and optional recording.\n7. spider_close_session releases memory; it is different from completing a session.\n\nOrdinary UI: npm start (no dependencies). MCP: npm --prefix mcp ci, then configure your host to launch node /absolute/project/mcp/server.mjs over stdio. Optional --export-root /absolute/directory restricts explicit disk writes. Only new leaf file/directory names are accepted; existing exports are never overwritten.\n\nLimits: 20 sessions, 10,000 unique events/session, 16 MiB update log/session, paginated get up to 200 events. All sessions are process-local and in memory until you export. Stopping MCP closes its previews. No automatic Agent instrumentation, no cloud services. Never report keys, credentials or private chain of thought.\n`;
 
 export async function createRuntime({ projectRoot = root, exportRoot = path.join(projectRoot, 'exports') } = {}) {
   const store = new SessionStore();

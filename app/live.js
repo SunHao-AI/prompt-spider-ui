@@ -90,7 +90,7 @@ export async function startLive(project={}) {
   function syncConfig(config){
     $('#livePrompt').disabled=Boolean(meta.totalEvents);$('#promptLock').textContent=meta.totalEvents?'已有事件：提示词与任务单位已锁定，新提示词请创建新会话。':'逐词事件通过 tokenIndex 与提示词对应。';
     if(lastConfig===config)return;lastConfig=config;const t=config.theme;
-    for(const [name,value] of Object.entries({bg:t.background,panel:t.panel,border:t.border,text:t.text,muted:t.muted,pink:t.accent,code:config.routes.code.color,model:config.routes.model.color,you:config.routes.you.color}))document.documentElement.style.setProperty(`--${name}`,value);
+    for(const [name,value] of Object.entries({bg:t.background,panel:t.panel,border:t.border,text:t.text,muted:t.muted,pink:t.accent,code:config.routes.code.color,model:config.routes.model.color,ext:config.routes.ext.color,you:config.routes.you.color}))document.documentElement.style.setProperty(`--${name}`,value);
     document.title=`${config.title} · Prompt Spider`;$('#liveTitle').textContent=config.title;$('.view-heading>span').lastChild.textContent=` ${config.subtitle||'EVERY TASK, ONE FORK'}`;$('.local').textContent=remote?'MCP SESSION':'LOCAL REPLAY';
     if(!$('#liveConfig').contains(document.activeElement)){
       $('#layoutInput').value=config.layout;$('#titleInput').value=config.title;$('#modelInput').value=config.modelName;$('#accentInput').value=t.accent;$('#spiderInput').value=t.spider;$('#backgroundInput').value=t.background;$('#livePrompt').value=config.prompt;
