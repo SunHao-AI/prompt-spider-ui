@@ -39,15 +39,27 @@ export function routeTarget(layout,route) {
   return {x:s.x+s.w*.875,y:s.y+s.h*(.15+Math.max(0,index)*.235)};
 }
 
+// 轨道参数(椭圆中心+半径): wall 对准词团实际 bbox(缺省回落 wallArea), 其余布局用场景比例。
+// 从 livePose 抽出, 供渲染层缓动(参数连续变化 => 位置连续, 蜘蛛不再瞬移)。
+export function orbitTarget(layout, tight=null) {
+  const s=layout.scene;
+  if(layout===LIVE_LAYOUTS.wall){const a=tight??wallArea(s);return {cx:a.x+a.w*.5,cy:a.y+a.h*.5,rx:a.w*.42,ry:Math.max(60,a.h*.42)};}
+  return {cx:s.x+s.w*.39,cy:s.y+s.h*.50,rx:s.w*.075,ry:s.h*.33};
+}
 // Closed analytic orbit: position AND velocity join smoothly, at any elapsed time.
-// tight(可选, 仅 wall): 本可见页词团的实际 bbox——轨道对准"词真正在哪", 而不是固定区域;
-// 缺省回落 wallArea(如首帧尚无 regions)。
-export function livePose(layout,time,reducedMotion=false,tight=null) {
-  const s=layout.scene,omega=reducedMotion?0:Math.PI*2/16,angle=reducedMotion?1.3:time*omega;
-  const a=layout===LIVE_LAYOUTS.wall?(tight??wallArea(s)):null;
-  const rx=a?a.w*.42:s.w*.075, ry=a?Math.max(60,a.h*.42):s.h*.33,
-        cx=a?a.x+a.w*.5:s.x+s.w*.39, cy=a?a.y+a.h*.5:s.y+s.h*.50;
+export function poseFromOrbit({cx,cy,rx,ry},time,omega,reducedMotion=false) {
+  const angle=reducedMotion?1.3:time*omega;
   return {x:cx+Math.cos(angle)*rx,y:cy+Math.sin(angle)*ry,vx:-Math.sin(angle)*rx*omega,vy:Math.cos(angle)*ry*omega};
+}
+// 轨道参数帧率无关指数平滑: k=1-exp(-dt/τ)。目标突变时参数连续逼近, 观感为蜘蛛巡游过去而非跳过去。
+export function easeOrbit(current,target,dt,tau=0.35) {
+  const k=1-Math.exp(-Math.max(0,dt)/tau);
+  const mix=(a,b)=>a+(b-a)*k;
+  return {cx:mix(current.cx,target.cx),cy:mix(current.cy,target.cy),rx:mix(current.rx,target.rx),ry:mix(current.ry,target.ry)};
+}
+export function livePose(layout,time,reducedMotion=false,tight=null) {
+  const omega=reducedMotion?0:Math.PI*2/16;
+  return poseFromOrbit(orbitTarget(layout,tight),time,omega,reducedMotion);
 }
 export function resolveCursor(meta,sinceAnchorMs=0) {
   const playback=meta.playback,delta=Math.max(0,sinceAnchorMs)/1000;
