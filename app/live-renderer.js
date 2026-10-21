@@ -10,7 +10,7 @@ export class LiveRenderer {
     this.canvas=canvas;this.ctx=canvas.getContext('2d',{alpha:false});this.regions=[];
     this.handleClick=event=>{const id=this.hitTest(event.clientX,event.clientY);if(id!==null)onSelect?.(id);};
     canvas.addEventListener('click',this.handleClick);
-    this.orbit=null;this.orbitTime=0;this.orbitPos=null;   // wall 轨道缓动状态(参数+上帧时刻+上帧位置)
+    this.orbit=null;this.orbitTime=0;this.orbitPos=null;this.orbitDt=0;   // wall 轨道缓动状态(参数+上帧时刻+上帧位置+本帧步长)
   }
   destroy(){this.canvas.removeEventListener('click',this.handleClick);}
   hitTest(clientX,clientY){const r=this.canvas.getBoundingClientRect();return hitEvent(this.regions,(clientX-r.left)/r.width*this.layout.width,(clientY-r.top)/r.height*this.layout.height);}
@@ -82,12 +82,13 @@ export class LiveRenderer {
     const diag=Math.hypot(s.w,s.h)*.6;
     const snap=!this.orbit||reducedMotion||!(dt>0)||dt>0.5||Math.hypot(target.cx-this.orbit.cx,target.cy-this.orbit.cy)>diag;
     this.orbit=snap?target:easeOrbit(this.orbit,target,dt);
-    return poseFromOrbit(this.orbit,time,Math.PI*2/16,reducedMotion);
+    this.orbitDt=snap?0:dt;   // snap 帧位置瞬移, 帧间差分不可信, 记 0 供 spider() 回落解析速度
+    return poseFromOrbit(this.orbit,time,reducedMotion?0:Math.PI*2/16,reducedMotion);
   }
   spider(body,time,reducedMotion,theme){
     const c=this.ctx,now=(globalThis.performance?.now()||0)/1000;
-    const speed=this.orbitPos&&now>this.orbitPos.t?Math.hypot(body.x-this.orbitPos.x,body.y-this.orbitPos.y)/(now-this.orbitPos.t)*16:Math.hypot(body.vx,body.vy);
-    // 差分速率换算(×16=轨道周期秒数)与解析速度同量纲, 保证缓动期间腿摆动与真实位移同步。
+    // 差分速率 |Δpos|/Δt 与解析速度(r×ω, px/s)同量纲, 直接可比; snap 帧(orbitDt=0)或步长异常时差分不可信, 回落解析速度。
+    const speed=this.orbitPos&&this.orbitDt>0&&this.orbitDt<=.5?Math.hypot(body.x-this.orbitPos.x,body.y-this.orbitPos.y)/this.orbitDt:Math.hypot(body.vx,body.vy);
     this.orbitPos={x:body.x,y:body.y,t:now};
     c.save();c.translate(body.x,body.y);c.rotate(Math.atan2(body.vx,-body.vy)||0);
     for(const side of [-1,1])for(let index=0;index<8;index++){const pose=legPose({time,reducedMotion,side,index,speed});c.beginPath();c.moveTo(pose.root.x,pose.root.y);for(const p of [pose.knee,pose.ankle,pose.foot])c.lineTo(p.x,p.y);c.strokeStyle=alpha(theme.spider,.76);c.lineWidth=1;c.stroke();c.fillStyle=theme.spider;c.fillRect(pose.foot.x-1,pose.foot.y-1,2,2);}
