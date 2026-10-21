@@ -1,4 +1,4 @@
-import { LIVE_LAYOUTS, eventPlacement, hitEvent, routeTarget, livePose, alpha, tightBox } from './live-layout.js';
+import { LIVE_LAYOUTS, eventPlacement, hitEvent, routeTarget, orbitTarget, poseFromOrbit, easeOrbit, alpha, tightBox } from './live-layout.js';
 import { legPose, heartbeatAt } from './spider.js';
 import { probePose } from './probes.js';
 
@@ -10,6 +10,7 @@ export class LiveRenderer {
     this.canvas=canvas;this.ctx=canvas.getContext('2d',{alpha:false});this.regions=[];
     this.handleClick=event=>{const id=this.hitTest(event.clientX,event.clientY);if(id!==null)onSelect?.(id);};
     canvas.addEventListener('click',this.handleClick);
+    this.orbit=null;this.orbitTime=0;this.orbitPos=null;   // wall 轨道缓动状态(参数+上帧时刻+上帧位置)
   }
   destroy(){this.canvas.removeEventListener('click',this.handleClick);}
   hitTest(clientX,clientY){const r=this.canvas.getBoundingClientRect();return hitEvent(this.regions,(clientX-r.left)/r.width*this.layout.width,(clientY-r.top)/r.height*this.layout.height);}
@@ -53,7 +54,8 @@ export class LiveRenderer {
     this.text('真实事件 · 由 Agent 主动上报',layout.width-40,layout.height-18,theme.accent,10,'right');
   }
   web(view,time,reducedMotion,selectedId){
-    const c=this.ctx,{config}=view,t=config.theme,s=this.layout.scene,body=livePose(this.layout,time,reducedMotion,this.wallTight??null);
+    const c=this.ctx,{config}=view,t=config.theme,s=this.layout.scene;
+    const body=this.easedPose(time,reducedMotion);
     // A thin mesh uses only this visible page. Historical data never grows per-frame work.
     for(let i=0;i<24;i++){
       const y=s.y+55+(s.h-85)*i/23,target=routeTarget(this.layout,ROUTES[i%3]);
@@ -72,9 +74,23 @@ export class LiveRenderer {
     this.spider(body,time,reducedMotion,t);
     for(const route of ROUTES){const p=routeTarget(this.layout,route),color=config.routes[route].color,w=s.w*.19,h=100;c.fillStyle=t.panel;c.fillRect(p.x-w/2,p.y-h/2,w,h);c.strokeStyle=alpha(color,.8);c.strokeRect(p.x-w/2,p.y-h/2,w,h);c.fillStyle=color;c.fillRect(p.x-w/2,p.y-h/2,w,5);this.text(config.routes[route].label,p.x-w/2+12,p.y-20,color,12);this.text(view.counts[route]??0,p.x+w/2-12,p.y+18,color,29,'right',true);this.text(route.toUpperCase(),p.x-w/2+12,p.y+37,t.muted,9);}
   }
+  // 蜘蛛位姿 = 沿"缓动后的轨道"取当前角度。目标轨道参数(词团 bbox/翻页/过滤)突变时参数指数逼近,
+  // 位置保持连续; snap 场景(首帧/reducedMotion/后台恢复/大幅 seek)直接落位。
+  easedPose(time,reducedMotion) {
+    const s=this.layout.scene,target=orbitTarget(this.layout,this.wallTight??null);
+    const now=(globalThis.performance?.now()||0)/1000,dt=now-this.orbitTime;this.orbitTime=now;
+    const diag=Math.hypot(s.w,s.h)*.6;
+    const snap=!this.orbit||reducedMotion||!(dt>0)||dt>0.5||Math.hypot(target.cx-this.orbit.cx,target.cy-this.orbit.cy)>diag;
+    this.orbit=snap?target:easeOrbit(this.orbit,target,dt);
+    return poseFromOrbit(this.orbit,time,Math.PI*2/16,reducedMotion);
+  }
   spider(body,time,reducedMotion,theme){
-    const c=this.ctx;c.save();c.translate(body.x,body.y);c.rotate(Math.atan2(body.vx,-body.vy)||0);
-    for(const side of [-1,1])for(let index=0;index<8;index++){const pose=legPose({time,reducedMotion,side,index,speed:Math.hypot(body.vx,body.vy)});c.beginPath();c.moveTo(pose.root.x,pose.root.y);for(const p of [pose.knee,pose.ankle,pose.foot])c.lineTo(p.x,p.y);c.strokeStyle=alpha(theme.spider,.76);c.lineWidth=1;c.stroke();c.fillStyle=theme.spider;c.fillRect(pose.foot.x-1,pose.foot.y-1,2,2);}
+    const c=this.ctx,now=(globalThis.performance?.now()||0)/1000;
+    const speed=this.orbitPos&&now>this.orbitPos.t?Math.hypot(body.x-this.orbitPos.x,body.y-this.orbitPos.y)/(now-this.orbitPos.t)*16:Math.hypot(body.vx,body.vy);
+    // 差分速率换算(×16=轨道周期秒数)与解析速度同量纲, 保证缓动期间腿摆动与真实位移同步。
+    this.orbitPos={x:body.x,y:body.y,t:now};
+    c.save();c.translate(body.x,body.y);c.rotate(Math.atan2(body.vx,-body.vy)||0);
+    for(const side of [-1,1])for(let index=0;index<8;index++){const pose=legPose({time,reducedMotion,side,index,speed});c.beginPath();c.moveTo(pose.root.x,pose.root.y);for(const p of [pose.knee,pose.ankle,pose.foot])c.lineTo(p.x,p.y);c.strokeStyle=alpha(theme.spider,.76);c.lineWidth=1;c.stroke();c.fillStyle=theme.spider;c.fillRect(pose.foot.x-1,pose.foot.y-1,2,2);}
     c.fillStyle=alpha(theme.spider,.10);c.strokeStyle=theme.spider;c.beginPath();c.ellipse(0,0,24,30,0,0,Math.PI*2);c.fill();c.stroke();
     c.save();c.clip();for(let i=-3;i<=3;i++){c.strokeStyle=alpha(theme.spider,.32);c.beginPath();c.ellipse(i*5,0,8,30,0,0,Math.PI*2);c.stroke();c.beginPath();c.ellipse(0,i*7,24,7,0,0,Math.PI*2);c.stroke();}c.restore();
     const heart=heartbeatAt(time,reducedMotion);c.shadowColor=theme.accent;c.shadowBlur=heart.glow;c.fillStyle=theme.accent;c.fillRect(-heart.size/2,-heart.size/2,heart.size,heart.size);c.shadowBlur=0;c.restore();
