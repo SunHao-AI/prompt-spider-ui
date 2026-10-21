@@ -23,7 +23,7 @@ export async function startLive(project={}) {
       <div id="selection" class="selection"><span class="muted">点击画布中的事件，查看 Agent 上报的内容。</span></div></section>
     <section class="control-section"><div class="section-title">布局与外观 <span>02</span></div>
       <form id="liveConfig" class="live-form">
-        <label for="layoutInput">画布布局</label><select id="layoutInput"><option value="portrait">竖屏 · 1080 × 1350</option><option value="landscape">横屏 · 1600 × 900</option><option value="square">方形 · 1080 × 1080</option></select>
+        <label for="layoutInput">画布布局</label><select id="layoutInput"><option value="portrait">竖屏 · 1080 × 1350</option><option value="landscape">横屏 · 1600 × 900</option><option value="square">方形 · 1080 × 1080</option><option value="wall">词墙 · 1600 × 900</option></select>
         <label for="titleInput">标题</label><input id="titleInput" maxlength="80" required>
         <label for="modelInput">模型 / Agent 名称</label><input id="modelInput" maxlength="80" required>
         <div class="live-color-row"><label>核心 <input id="accentInput" type="color"></label><label>蜘蛛 <input id="spiderInput" type="color"></label><label>背景 <input id="backgroundInput" type="color"></label></div>
@@ -33,12 +33,17 @@ export async function startLive(project={}) {
       </form></section>
     <label for="replayInput" class="export live-import">导入会话回放 JSON ↑</label><input id="replayInput" class="sr-only" type="file" accept="application/json,.json">`);
   $('#restartBtn').insertAdjacentHTML('afterend','<button id="followLiveBtn" class="live-follow">返回实时</button>');
+  // 布局切换(词墙↔列表): 只改前端视图配置并记忆偏好, 不回写会话; 参考演示同款词墙观感由此开启。
+  $('#liveTitle').insertAdjacentHTML('afterend','<button id="wallSwitch" class="live-follow" style="margin-left:14px">▦ 词墙</button>');
   $('#loop').checked=false;
   $('#aboutDialog').querySelectorAll('p').forEach(p=>p.remove());
   $('#aboutDialog').insertAdjacentHTML('beforeend','<p>实时模式接收 Agent 通过 MCP 上报的步骤或逐词事件。相同事件 ID 会更新状态，UI 不把重复更新当成新任务，也不会生成未提供的分数、预计总量或模型调用数。</p><p>暂停和拖动时间轴只冻结观看位置，事件仍在后台接收。点击“返回实时”回到最新状态。回放 JSON 保留上报历史、相对时间和外观变更，可以离线导入。</p><p class="muted">快捷键：空格播放 / 暂停，R 重播，F 沉浸模式，Esc 退出；左右方向键前后跳转。</p>');
   const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches,canvas=$('#scene');
   const renderer=new LiveRenderer(canvas,{onSelect:selectEvent});
   let sessionId=new URLSearchParams(location.search).get('session'),remote=Boolean(sessionId),token='',meta=null,record=null,projection=null,anchor=performance.now(),selectedId=null,drawerOpen=false,connection='正在连接',streamAbort=null,toastTimer,lastUi=0,lastConfig=null,lastView=null,localStore=null,localId=null,reconnectTimer=null,closed=false,visiblePage=0,wordConfig=null,wordTokens=[];
+  // 词墙偏好: 'wall'=强制词墙 / 'list'=跟随会话配置 / null=默认词墙(观测面板回放场景)。
+  let wallPref=null;try{wallPref=localStorage.getItem('ps-live-layout');}catch(error){}
+  let wallBase=null,wallCfg={};
   const capabilities=new URLSearchParams(location.hash.slice(1));
   if(capabilities.has('token')){token=capabilities.get('token');sessionStorage.setItem('prompt-spider-token',token);history.replaceState(null,'',location.pathname+location.search);}
   else token=sessionStorage.getItem('prompt-spider-token')||'';
@@ -97,11 +102,21 @@ export async function startLive(project={}) {
       for(const route of ROUTES){$(`#label-${route}`).value=config.routes[route].label;$(`#color-${route}`).value=config.routes[route].color;}
     }
     for(const route of ROUTES)$(`[data-live-route="${route}"]`).textContent=config.routes[route].label;
-    canvas.style.aspectRatio=config.layout==='portrait'?'4/5':config.layout==='landscape'?'16/9':'1/1';document.body.dataset.layout=config.layout;
+    canvas.style.aspectRatio=config.layout==='portrait'?'4/5':config.layout==='square'?'1/1':'16/9';document.body.dataset.layout=config.layout;
+    const sw=$('#wallSwitch');if(sw)sw.textContent=(config.layout==='wall'?'☰ 列表':'▦ 词墙');
   }
   function render(force=false){
     if(!projection||!meta)return;const at=cursor(),filter=meta.playback.routeFilter||'all';let page=meta.playback.page||0;
-    let view=projection.view(at,{offset:page*PAGE_SIZE,limit:PAGE_SIZE});const maxPage=Math.max(0,Math.ceil(view.totalEvents/PAGE_SIZE)-1);if(page>maxPage){page=maxPage;view=projection.view(at,{offset:page*PAGE_SIZE,limit:PAGE_SIZE});}visiblePage=page;lastView=view;syncConfig(view.config);
+    let view=projection.view(at,{offset:page*PAGE_SIZE,limit:PAGE_SIZE});const maxPage=Math.max(0,Math.ceil(view.totalEvents/PAGE_SIZE)-1);if(page>maxPage){page=maxPage;view=projection.view(at,{offset:page*PAGE_SIZE,limit:PAGE_SIZE});}visiblePage=page;lastView=view;
+    // 词墙偏好作用于前端渲染视图(不回写会话配置, 他人真机会话默认不受影响; 面板导出 record 自带 wall)。
+    // 覆盖后的 config 必须按基准缓存(同引用): syncConfig 用 lastConfig===config 短路去重。
+    const wantWall=(wallPref??'wall')==='wall'?view.config.layout!=='wall':view.config.layout==='wall';
+    if(wantWall){
+      const target=wallPref==='list'?'landscape':'wall';
+      if(wallBase!==view.config||wallCfg.layout!==target){wallBase=view.config;wallCfg={...view.config,layout:target};}
+      view={...view,config:wallCfg};
+    } else wallBase=null;
+    syncConfig(view.config);
     if(view.config.unit==='word'){if(wordConfig!==view.config){wordConfig=view.config;wordTokens=tokenizePrompt(view.config.prompt).tokens;}view={...view,events:view.events.map(event=>({...event,displayLabel:wordTokens[event.tokenIndex]?.word??event.label}))};}
     renderer.render(view,{time:at,reducedMotion,selectedId,page,routeFilter:filter,connection});
     const now=performance.now();if(!force&&now-lastUi<100)return;lastUi=now;
@@ -117,6 +132,8 @@ export async function startLive(project={}) {
   }
   function download(payload){const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='prompt-spider-session.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   $('#playBtn').addEventListener('click',()=>control({action:meta?.playback.mode==='paused'?'play':'pause'}));$('#restartBtn').addEventListener('click',()=>control({action:'restart'}));$('#followLiveBtn').addEventListener('click',()=>control({action:'follow_live'}));
+  $('#wallSwitch').addEventListener('click',()=>{wallPref=wallPref===null?(document.body.dataset.layout==='wall'?'list':'wall'):wallPref==='wall'?'list':'wall';
+    try{localStorage.setItem('ps-live-layout',wallPref);}catch(error){}render(true);});
   $('#timeline').addEventListener('input',event=>control({action:'seek',position:Number(event.target.value)}));$('#speed').addEventListener('change',event=>control({speed:Number(event.target.value)}));$('#loop').addEventListener('change',event=>control({loop:event.target.checked}));
   document.querySelectorAll('[data-live-route]').forEach(button=>button.addEventListener('click',()=>control({routeFilter:button.dataset.liveRoute})));
   $('#previousPage').addEventListener('click',()=>control({page:Math.max(0,visiblePage-1)}));$('#nextPage').addEventListener('click',()=>control({page:visiblePage+1}));

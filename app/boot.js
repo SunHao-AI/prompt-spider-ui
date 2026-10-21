@@ -15,6 +15,18 @@ if(configError){
   const detail=document.createElement('p');detail.textContent=`${configError.message}。请修正项目根目录中的 project-config.json，然后刷新页面。`;
   diagnostic.append(title,detail);document.querySelector('#stageHost').replaceChildren(diagnostic);document.querySelector('.transport').hidden=true;document.querySelector('#inspectorToggle').hidden=true;document.title='project-config.json 配置错误 · Prompt Spider';
 }else if(new URLSearchParams(location.search).has('session') || Object.keys(project).length) {
+  // chrome=none: 嵌入模式——隐藏顶栏/标题行/控制抽屉, 画布占满视口
+  if(new URLSearchParams(location.search).get('chrome')==='none')document.body.classList.add('chromeless');
+  const sid=new URLSearchParams(location.search).get('session');
+  if(sid){
+    try{localStorage.setItem('ps-last-session',sid);}catch(error){}
+    document.querySelector('.wordmark').insertAdjacentHTML('afterend','<a class="mode-switch" href="/" title="切换到预设参考演示">▶ 参考演示</a>');
+  }
   const {startLive}=await import('./live.js');
   await startLive(project);
-} else await import('./main.js');
+} else {
+  // 参考演示模式: 若本机看过会话回放, 提供一键切回(token 由 live.js 的 sessionStorage 回退接管)
+  let last=null;try{last=localStorage.getItem('ps-last-session');}catch(error){}
+  if(last)document.querySelector('.wordmark').insertAdjacentHTML('afterend',`<a class="mode-switch" href="/?session=${encodeURIComponent(last)}" title="切回最近一次会话回放">⟲ 回放上次会话</a>`);
+  await import('./main.js');
+}

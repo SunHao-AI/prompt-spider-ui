@@ -4,11 +4,32 @@ export const LIVE_LAYOUTS = Object.freeze({
   portrait: Object.freeze({ width:1080, height:1350, scene:box(40,130,1000,850), stream:box(40,1000,630,300), stats:box(690,1000,350,300) }),
   landscape: Object.freeze({ width:1600, height:900, scene:box(40,125,1080,730), stream:box(1140,125,420,410), stats:box(1140,555,420,300) }),
   square: Object.freeze({ width:1080, height:1080, scene:box(40,130,1000,730), stream:null, stats:box(40,880,1000,150) }),
+  // 词墙(参考演示同款观感): 与 landscape 同页, 但事件铺成中部多列词墙、蜘蛛轨道压在墙上。
+  wall: Object.freeze({ width:1600, height:900, scene:box(40,125,1080,730), stream:box(1140,125,420,410), stats:box(1140,555,420,300) }),
 });
 
+// 词墙区(仅 wall 布局): 场景中部 ~62% 宽度多列网格, 避开右缘分箱列(routeTarget .875)与标题带。
+export function wallArea(s) { return box(s.x + s.w * .10, s.y + 68, s.w * .62, s.h - 105); }
+
 export function eventPlacement(layout, events) {
-  const s=layout.scene, spacing=Math.min(22,(s.h-110)/PAGE_SIZE);
+  const s=layout.scene;
+  if (layout === LIVE_LAYOUTS.wall) {
+    const a=wallArea(s), n=Math.min(events.length,PAGE_SIZE);
+    const cols=Math.max(1,Math.min(3,Math.ceil(n/Math.ceil(n/3))));           // 3~4 行自适应列数
+    const rows=Math.ceil(n/cols), cw=a.w/cols, ch=Math.min(46,a.h/Math.max(1,rows));  // 行高封顶: 事件少时词团紧凑在顶部, 不拉伸铺满(否则行间大空白, 蜘蛛像在空处转圈)
+    return events.slice(0,PAGE_SIZE).map((event,i)=>({event,
+      x:a.x+(i%cols)*cw+cw*.06, y:a.y+8+Math.floor(i/cols)*ch+ch*.5,
+      w:cw*.88,h:Math.min(24,ch-8),index:i}));
+  }
+  const spacing=Math.min(22,(s.h-110)/PAGE_SIZE);
   return events.slice(0,PAGE_SIZE).map((event,index)=>({event,x:s.x+35,y:s.y+79+index*spacing,w:s.w*.30,h:spacing-2,index}));
+}
+// 词团实际 bbox(供 livePose 对准): 由本可见页的 regions 反推, 翻页/过滤后轨道随之收敛。
+export function tightBox(regions) {
+  if(!regions.length)return null;
+  const x0=Math.min(...regions.map(r=>r.x)), x1=Math.max(...regions.map(r=>r.x+r.w));
+  const y0=Math.min(...regions.map(r=>r.y-r.h/2)), y1=Math.max(...regions.map(r=>r.y+r.h/2));
+  return box(x0,y0,x1-x0,y1-y0);
 }
 export function hitEvent(regions,x,y) {
   return regions.find(region=>x>=region.x && x<=region.x+region.w && y>=region.y-region.h/2 && y<=region.y+region.h/2)?.event.id ?? null;
@@ -19,9 +40,13 @@ export function routeTarget(layout,route) {
 }
 
 // Closed analytic orbit: position AND velocity join smoothly, at any elapsed time.
-export function livePose(layout,time,reducedMotion=false) {
-  const s=layout.scene,angle=reducedMotion?1.3:time*Math.PI*2/16;
-  const rx=s.w*.075,ry=s.h*.33,cx=s.x+s.w*.39,cy=s.y+s.h*.50,omega=reducedMotion?0:Math.PI*2/16;
+// tight(可选, 仅 wall): 本可见页词团的实际 bbox——轨道对准"词真正在哪", 而不是固定区域;
+// 缺省回落 wallArea(如首帧尚无 regions)。
+export function livePose(layout,time,reducedMotion=false,tight=null) {
+  const s=layout.scene,omega=reducedMotion?0:Math.PI*2/16,angle=reducedMotion?1.3:time*omega;
+  const a=layout===LIVE_LAYOUTS.wall?(tight??wallArea(s)):null;
+  const rx=a?a.w*.42:s.w*.075, ry=a?Math.max(60,a.h*.42):s.h*.33,
+        cx=a?a.x+a.w*.5:s.x+s.w*.39, cy=a?a.y+a.h*.5:s.y+s.h*.50;
   return {x:cx+Math.cos(angle)*rx,y:cy+Math.sin(angle)*ry,vx:-Math.sin(angle)*rx*omega,vy:Math.cos(angle)*ry*omega};
 }
 export function resolveCursor(meta,sinceAnchorMs=0) {

@@ -14,11 +14,20 @@ body.drawer-open .drawer-toggle{transform:translate(calc(-1 * var(--drawer-width
 body.drawer-open .drawer-toggle svg{transform:rotate(180deg)}
 .drawer-backdrop{display:none;position:fixed;z-index:40;inset:52px 0 0;background:#0006}
 body.immersive .drawer-toggle,body.immersive .drawer-backdrop{display:none}
+/* chrome=none 嵌入模式(boot.js 挂 body.chromeless): 复用沉浸布局, 画布即全部 */
+body.chromeless .topbar,body.chromeless .inspector,body.chromeless .view-heading,body.chromeless .transport,body.chromeless .drawer-toggle,body.chromeless .drawer-backdrop{display:none}
+body.chromeless .workspace{display:block;height:100dvh;min-height:0}
+body.chromeless .viewer{height:100%;padding:0;border:0}
+body.chromeless .stage-host{height:100dvh;min-height:0;max-height:none}
+body.chromeless #scene{height:100%;width:auto;max-width:100%}
+/* 顶栏模式切换(boot.js 注入): 参考演示 ↔ 会话回放 */
+.mode-switch{margin:0 auto 0 14px;color:var(--pink);border:1px solid var(--border);border-radius:8px;padding:6px 12px;text-decoration:none;font-size:11px;letter-spacing:.08em;white-space:nowrap}
+.mode-switch:hover{border-color:var(--pink)}
 @media(max-width:1050px){.workspace{display:block}.inspector{padding:18px 24px 28px}}
 @media(max-width:720px){:root{--drawer-width:min(320px,calc(100vw - 52px))}.inspector{top:52px;bottom:0;height:calc(100dvh - 52px);border-top:0;padding:16px 20px 26px}.panel-intro h1 br{display:initial}.panel-intro h1{font-size:27px}.drawer-backdrop{display:block}.drawer-backdrop[hidden]{display:none}.drawer-toggle{width:32px;min-height:100px}}
 .live-session .stage-host{background:var(--bg)}
 .live-session .viewer,.live-session .transport,.live-session .view-heading{max-width:1700px;margin-left:auto;margin-right:auto}
-.live-session[data-layout=landscape] #scene{max-width:100%;max-height:100%;width:100%;height:auto;object-fit:contain}
+.live-session[data-layout=landscape] #scene,.live-session[data-layout=wall] #scene{max-width:100%;max-height:100%;width:100%;height:auto;object-fit:contain}
 .live-session[data-layout=square] #scene{aspect-ratio:1/1}
 .live-session .live-follow{border-color:var(--pink);color:var(--pink);white-space:nowrap}
 .live-session .live-follow.active{background:color-mix(in srgb,var(--pink) 12%,var(--bg))}

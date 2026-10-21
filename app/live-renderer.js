@@ -1,4 +1,4 @@
-import { LIVE_LAYOUTS, eventPlacement, hitEvent, routeTarget, livePose, alpha } from './live-layout.js';
+import { LIVE_LAYOUTS, eventPlacement, hitEvent, routeTarget, livePose, alpha, tightBox } from './live-layout.js';
 import { legPose, heartbeatAt } from './spider.js';
 import { probePose } from './probes.js';
 
@@ -36,6 +36,7 @@ export class LiveRenderer {
     const scene=layout.scene;this.panel(scene,config.unit==='word'?'PROMPT / TOKEN STREAM':'AGENT / TASK STREAM',theme,`PAGE ${page+1} · ${view.totalEvents} EVENTS`);
     c.save();c.beginPath();c.rect(scene.x+1,scene.y+31,scene.w-2,scene.h-32);c.clip();
     this.regions=eventPlacement(layout,view.events).filter(x=>routeFilter==='all'||x.event.route===routeFilter);
+    this.wallTight=layout===LIVE_LAYOUTS.wall?tightBox(this.regions):null;   // 轨道对准实际词团
     this.web(view,time,reducedMotion,selectedId);
     for(const region of this.regions){
       const {event,x,y,w,h}=region,color=config.routes[event.route].color,selected=event.id===selectedId;
@@ -52,7 +53,7 @@ export class LiveRenderer {
     this.text('真实事件 · 由 Agent 主动上报',layout.width-40,layout.height-18,theme.accent,10,'right');
   }
   web(view,time,reducedMotion,selectedId){
-    const c=this.ctx,{config}=view,t=config.theme,s=this.layout.scene,body=livePose(this.layout,time,reducedMotion);
+    const c=this.ctx,{config}=view,t=config.theme,s=this.layout.scene,body=livePose(this.layout,time,reducedMotion,this.wallTight??null);
     // A thin mesh uses only this visible page. Historical data never grows per-frame work.
     for(let i=0;i<24;i++){
       const y=s.y+55+(s.h-85)*i/23,target=routeTarget(this.layout,ROUTES[i%3]);
