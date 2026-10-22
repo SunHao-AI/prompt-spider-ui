@@ -20,13 +20,13 @@ if(configError){
   const sid=new URLSearchParams(location.search).get('session');
   if(sid){
     try{localStorage.setItem('ps-last-session',sid);}catch(error){}
-    document.querySelector('.wordmark').insertAdjacentHTML('afterend','<a class="mode-switch" href="/" title="切换到预设参考演示">▶ 参考演示</a>');
+    document.querySelector('.top-actions').insertAdjacentHTML('afterbegin','<a class="mode-switch" href="/" title="切换到预设参考演示">▶ 参考演示</a>');
   }
   const {startLive}=await import('./live.js');
   await startLive(project);
 } else {
   // 参考演示模式: 若本机看过会话回放, 提供一键切回(token 由 live.js 的 sessionStorage 回退接管)
   let last=null;try{last=localStorage.getItem('ps-last-session');}catch(error){}
-  if(last)document.querySelector('.wordmark').insertAdjacentHTML('afterend',`<a class="mode-switch" href="/?session=${encodeURIComponent(last)}" title="切回最近一次会话回放">⟲ 回放上次会话</a>`);
+  if(last)document.querySelector('.top-actions').insertAdjacentHTML('afterbegin',`<a class="mode-switch" href="/?session=${encodeURIComponent(last)}" title="切回最近一次会话回放">⟲ 回放上次会话</a>`);
   await import('./main.js');
 }

@@ -1,4 +1,6 @@
 import { LiveRenderer } from './live-renderer.js';
+import { Renderer as ReferenceRenderer } from './renderer.js';
+import { sessionRun, sessionStateAt } from './reference-session.js';
 import { SessionProjection, validateRecord } from '/lib/replay.js';
 import { SessionStore } from '/lib/session-store.js';
 import { ROUTES, tokenizePrompt } from '/lib/config.js';
@@ -15,12 +17,12 @@ export async function startLive(project={}) {
   $('.wordmark span').textContent='AGENT INTERFACE';
   document.querySelectorAll('.control-section').forEach(section=>section.remove());
   $('#exportBtn').textContent='导出会话回放 JSON ↓';
-  $('.footnote').textContent='分支代表 Agent 上报的类别；UI 不执行任务。未上报的指标显示为未提供。';
+  $('.footnote p').textContent='分支代表 Agent 上报的类别；UI 不执行任务。未上报的指标显示为未提供。';
   $('#exportBtn').insertAdjacentHTML('beforebegin',`
     <section class="control-section"><div class="section-title">查看事件 <span>01</span></div>
-      <div id="liveFilters" class="filters" aria-label="分支筛选"><button data-live-route="all" class="active">全部</button>${ROUTES.map(route=>`<button data-live-route="${route}">${route}</button>`).join('')}</div>
+      <div id="liveFilters" class="filters" role="group" aria-label="分支筛选"><button data-live-route="all" class="active" aria-pressed="true">全部</button>${ROUTES.map(route=>`<button data-live-route="${route}" aria-pressed="false">${route}</button>`).join('')}</div>
       <div class="live-pagination"><button id="previousPage" aria-label="上一页">←</button><span id="pageText">1 / 1</span><button id="nextPage" aria-label="下一页">→</button></div>
-      <div id="selection" class="selection"><span class="muted">点击画布中的事件，查看 Agent 上报的内容。</span></div></section>
+      <div id="selection" class="selection" aria-live="polite" aria-atomic="true"><span class="muted">点击画布中的事件，查看 Agent 上报的内容。</span></div></section>
     <section class="control-section"><div class="section-title">布局与外观 <span>02</span></div>
       <form id="liveConfig" class="live-form">
         <label for="layoutInput">画布布局</label><select id="layoutInput"><option value="portrait">竖屏 · 1080 × 1350</option><option value="landscape">横屏 · 1600 × 900</option><option value="square">方形 · 1080 × 1080</option><option value="wall">词墙 · 1600 × 900</option></select>
@@ -39,9 +41,34 @@ export async function startLive(project={}) {
   $('#aboutDialog').querySelectorAll('p').forEach(p=>p.remove());
   $('#aboutDialog').insertAdjacentHTML('beforeend','<p>实时模式接收 Agent 通过 MCP 上报的步骤或逐词事件。相同事件 ID 会更新状态，UI 不把重复更新当成新任务，也不会生成未提供的分数、预计总量或模型调用数。</p><p>暂停和拖动时间轴只冻结观看位置，事件仍在后台接收。点击“返回实时”回到最新状态。回放 JSON 保留上报历史、相对时间和外观变更，可以离线导入。</p><p class="muted">快捷键：空格播放 / 暂停，R 重播，F 沉浸模式，Esc 退出；左右方向键前后跳转。</p>');
   const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches,canvas=$('#scene');
-  const renderer=new LiveRenderer(canvas,{onSelect:selectEvent});
+  const onSelect=index=>{const id=refCache?.run?.indexToEventId?.[index];if(id!=null)selectEvent(id);};
+  // 两个渲染器共享同一 canvas: 命中检测只在 wall 模式走参考渲染器, 其余走列表渲染器;
+  // 监听器只挂一次(live.js 统一路由), 渲染器不自带 click, 避免陈旧命中区误触发。
+  const renderer=new LiveRenderer(canvas,{});
+  const reference=new ReferenceRenderer(canvas,{});
+  let refCache=null;
+  const activeHitTest=(x,y)=>refCache?reference.hitTest(x,y):renderer.hitTest(x,y);
+  // 微交互路由: hover 写入活动渲染器的 hover 态(参考渲染器按词 index, 列表渲染器按事件 id);
+  // 点击在活动渲染器上落一个扩散脉冲, 给"点中了哪个词"即时反馈(打开抽屉的同时画布也有回应)。
+  // 命中值语义按活动渲染器区分: 参考层返回词 index(需经 indexToEventId 换算),
+  // 列表层 hitTest 直接返回事件 id(旧代码统一走 indexToEventId, 列表模式点击因此失效)。
+  canvas.addEventListener('click',event=>{
+    const hit=activeHitTest(event.clientX,event.clientY);
+    if(hit==null)return;
+    const target=refCache?reference:renderer;
+    const point=target.toCanvas?.(event.clientX,event.clientY);
+    if(point)target.pulse={x:point.x,y:point.y,t:performance.now()};
+    if(refCache){const id=refCache.run?.indexToEventId?.[hit];if(id!=null)selectEvent(id);}
+    else selectEvent(hit);});
+  canvas.addEventListener('pointermove',event=>{
+    const hit=activeHitTest(event.clientX,event.clientY);
+    reference.hoverIndex=refCache?hit:null;
+    renderer.hoverId=refCache?null:hit;
+    canvas.style.cursor=hit!=null?'pointer':'default';});
+  canvas.addEventListener('pointerleave',()=>{reference.hoverIndex=null;renderer.hoverId=null;});
   let sessionId=new URLSearchParams(location.search).get('session'),remote=Boolean(sessionId),token='',meta=null,record=null,projection=null,anchor=performance.now(),selectedId=null,drawerOpen=false,connection='正在连接',streamAbort=null,toastTimer,lastUi=0,lastConfig=null,lastView=null,localStore=null,localId=null,reconnectTimer=null,closed=false,visiblePage=0,wordConfig=null,wordTokens=[];
-  // 词墙偏好: 'wall'=强制词墙 / 'list'=跟随会话配置 / null=默认词墙(观测面板回放场景)。
+  // 词墙偏好: 'wall'=强制参考复刻(词墙, 走参考渲染器) / 其余(null/'list')=横向列表满幅。
+  // 默认横向的原因: 观测面板浮层是宽舞台, 4/5 竖版词墙会被高度卡死成窄条。
   let wallPref=null;try{wallPref=localStorage.getItem('ps-live-layout');}catch(error){}
   let wallBase=null,wallCfg={};
   const capabilities=new URLSearchParams(location.hash.slice(1));
@@ -102,37 +129,49 @@ export async function startLive(project={}) {
       for(const route of ROUTES){$(`#label-${route}`).value=config.routes[route].label;$(`#color-${route}`).value=config.routes[route].color;}
     }
     for(const route of ROUTES)$(`[data-live-route="${route}"]`).textContent=config.routes[route].label;
-    canvas.style.aspectRatio=config.layout==='portrait'?'4/5':config.layout==='square'?'1/1':'16/9';document.body.dataset.layout=config.layout;
-    const sw=$('#wallSwitch');if(sw)sw.textContent=(config.layout==='wall'?'☰ 列表':'▦ 词墙');
+    // 词墙走参考渲染器: 画布恒为参考演示的 1080×1350(4/5), 其余布局按会话配置。
+    canvas.style.aspectRatio=config.layout==='wall'||config.layout==='portrait'?'4/5':config.layout==='square'?'1/1':'16/9';document.body.dataset.layout=config.layout;
   }
   function render(force=false){
     if(!projection||!meta)return;const at=cursor(),filter=meta.playback.routeFilter||'all';let page=meta.playback.page||0;
     let view=projection.view(at,{offset:page*PAGE_SIZE,limit:PAGE_SIZE});const maxPage=Math.max(0,Math.ceil(view.totalEvents/PAGE_SIZE)-1);if(page>maxPage){page=maxPage;view=projection.view(at,{offset:page*PAGE_SIZE,limit:PAGE_SIZE});}visiblePage=page;lastView=view;
     // 词墙偏好作用于前端渲染视图(不回写会话配置, 他人真机会话默认不受影响; 面板导出 record 自带 wall)。
     // 覆盖后的 config 必须按基准缓存(同引用): syncConfig 用 lastConfig===config 短路去重。
-    const wantWall=(wallPref??'wall')==='wall'?view.config.layout!=='wall':view.config.layout==='wall';
-    if(wantWall){
-      const target=wallPref==='list'?'landscape':'wall';
-      if(wallBase!==view.config||wallCfg.layout!==target){wallBase=view.config;wallCfg={...view.config,layout:target};}
+    // 词墙偏好: 'wall'=强制参考复刻 / 其余(含 null)=横向列表。观测面板浮层是宽舞台,
+    // wall 会话默认降为 landscape(16:9 铺满), 词墙由 ▦ 按钮显式开启并记忆偏好。
+    const configWall=view.config.layout==='wall';
+    const wallMode=wallPref==='wall';
+    let referenceActive=false;
+    if(wallMode)referenceActive=true;
+    else if(configWall){
+      if(wallBase!==view.config||wallCfg.layout!=='landscape'){wallBase=view.config;wallCfg={...view.config,layout:'landscape'};}
       view={...view,config:wallCfg};
-    } else wallBase=null;
+    }
     syncConfig(view.config);
     if(view.config.unit==='word'){if(wordConfig!==view.config){wordConfig=view.config;wordTokens=tokenizePrompt(view.config.prompt).tokens;}view={...view,events:view.events.map(event=>({...event,displayLabel:wordTokens[event.tokenIndex]?.word??event.label}))};}
-    renderer.render(view,{time:at,reducedMotion,selectedId,page,routeFilter:filter,connection});
+    if(referenceActive){
+      // 参考演示复刻: 以全量事件(非分页窗口)构建 run, 按 config+revision 缓存(revision 覆盖状态流转), 游标驱动时间轴。
+      const all=projection.state.events,sig=`${all.length}:${meta.revision}`;
+      if(!refCache||refCache.config!==view.config||refCache.sig!==sig)refCache={config:view.config,sig,run:sessionRun({config:view.config,events:all,status:view.status})};
+      reference.render(sessionStateAt(refCache.run,at,{reducedMotion,routeFilter:filter,selectedIndex:selectedId==null?null:refCache.run.eventIdToIndex[selectedId]??null}));
+    }
+    else{refCache=null;renderer.render(view,{time:at,reducedMotion,selectedId,page,routeFilter:filter,connection});}
+    {const sw=$('#wallSwitch');if(sw)sw.textContent=referenceActive?'☰ 列表':'▦ 词墙';}   // 标签跟实际渲染模式(而非会话配置)
+    {const pg=document.querySelector('.live-pagination');if(pg)pg.style.display=referenceActive?'none':'';}   // 词墙全量铺排, 分页无效
     const now=performance.now();if(!force&&now-lastUi<100)return;lastUi=now;
     const liveSource=meta.status==='live'&&meta.source!=='replay'&&!closed,maximum=liveSource?meta.elapsed+(now-anchor)/1000:meta.duration;
     $('#timeline').max=String(Math.max(.01,maximum));$('#timeline').value=String(at);$('#timeText').textContent=`${at.toFixed(2)} / ${maximum.toFixed(2)}`;
     const isPlaying=meta.playback.mode!=='paused'&&!closed;$('#playBtn').textContent=isPlaying?'暂停':'播放';$('#playBtn').setAttribute('aria-label',isPlaying?'暂停':'播放');$('#frameStatus').textContent=`${connection} · ${view.totalEvents} events · ${meta.playback.mode==='live'?'跟随实时':'回看'}`;
     $('#followLiveBtn').disabled=!liveSource;$('#followLiveBtn').classList.toggle('active',meta.playback.mode==='live');$('#loop').disabled=liveSource;$('#loop').checked=meta.playback.loop;$('#speed').value=String(meta.playback.speed);
     const pages=Math.max(1,Math.ceil(view.totalEvents/PAGE_SIZE));$('#pageText').textContent=`${page+1} / ${pages}`;$('#previousPage').disabled=page<=0;$('#nextPage').disabled=page>=pages-1;
-    document.querySelectorAll('[data-live-route]').forEach(button=>button.classList.toggle('active',button.dataset.liveRoute===filter));updateSelection();
+    document.querySelectorAll('[data-live-route]').forEach(button=>{const on=button.dataset.liveRoute===filter;button.classList.toggle('active',on);button.setAttribute('aria-pressed',String(on));});updateSelection();
   }
   function localReplay(input){
     const valid=validateRecord(input);clearTimeout(reconnectTimer);remote=false;streamAbort?.abort();localStore=new SessionStore();const snapshot=localStore.importRecord(valid);localId=snapshot.id;sessionId=null;connection='离线回放';selectedId=null;receiveSnapshot(snapshot);$('#liveDescription').textContent='离线回放 · 导入的记录仅保存在当前页面内存。';
   }
   function download(payload){const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='prompt-spider-session.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   $('#playBtn').addEventListener('click',()=>control({action:meta?.playback.mode==='paused'?'play':'pause'}));$('#restartBtn').addEventListener('click',()=>control({action:'restart'}));$('#followLiveBtn').addEventListener('click',()=>control({action:'follow_live'}));
-  $('#wallSwitch').addEventListener('click',()=>{wallPref=wallPref===null?(document.body.dataset.layout==='wall'?'list':'wall'):wallPref==='wall'?'list':'wall';
+  $('#wallSwitch').addEventListener('click',()=>{wallPref=wallPref==='wall'?'list':'wall';   // null 与 'list' 都是横向态: 首次点击总是切到词墙
     try{localStorage.setItem('ps-live-layout',wallPref);}catch(error){}render(true);});
   $('#timeline').addEventListener('input',event=>control({action:'seek',position:Number(event.target.value)}));$('#speed').addEventListener('change',event=>control({speed:Number(event.target.value)}));$('#loop').addEventListener('change',event=>control({loop:event.target.checked}));
   document.querySelectorAll('[data-live-route]').forEach(button=>button.addEventListener('click',()=>control({routeFilter:button.dataset.liveRoute})));
@@ -148,9 +187,9 @@ export async function startLive(project={}) {
   $('#fitBtn').addEventListener('click',()=>{const zoom=document.body.classList.toggle('zoom');$('#fitBtn').textContent=zoom?'适应窗口':'放大画布';$('#fitBtn').setAttribute('aria-pressed',String(zoom));});$('#fullscreenBtn').addEventListener('click',immersive);
   $('#aboutBtn').addEventListener('click',()=>$('#aboutDialog').showModal());$('#closeAbout').addEventListener('click',()=>$('#aboutDialog').close());
   document.addEventListener('pointerdown',event=>{if(drawerOpen&&!document.body.classList.contains('immersive')&&!$('#inspector').contains(event.target)&&!$('#inspectorToggle').contains(event.target)&&event.target!==$('#inspectorBackdrop'))drawer(false,{focus:false});});
-  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('#aboutDialog').open){if(document.body.classList.contains('immersive'))immersive();else drawer(false);return;}if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)||$('#aboutDialog').open||!meta)return;if(event.code==='Space'){event.preventDefault();control({action:meta.playback.mode==='paused'?'play':'pause'});}else if(event.key.toLowerCase()==='r')control({action:'restart'});else if(event.key.toLowerCase()==='f')immersive();else if(event.key==='ArrowRight')control({action:'seek',position:cursor()+.5});else if(event.key==='ArrowLeft')control({action:'seek',position:Math.max(0,cursor()-.5)});});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('#aboutDialog').open){if(document.body.classList.contains('immersive'))immersive();else if(drawerOpen)drawer(false);else if(window.parent!==window)window.parent.postMessage({type:'spider-replay-escape'},'*');return;}if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)||$('#aboutDialog').open||!meta)return;if(event.code==='Space'){event.preventDefault();control({action:meta.playback.mode==='paused'?'play':'pause'});}else if(event.key.toLowerCase()==='r')control({action:'restart'});else if(event.key.toLowerCase()==='f')immersive();else if(event.key==='ArrowRight')control({action:'seek',position:cursor()+.5});else if(event.key==='ArrowLeft')control({action:'seek',position:Math.max(0,cursor()-.5)});});
   window.addEventListener('resize',()=>render(true));window.addEventListener('beforeunload',()=>streamAbort?.abort());
-  window.spiderLive={getState:()=>lastView,getMeta:()=>meta,renderer,control,loadReplay:localReplay,selectEvent,render:()=>render(true)};
+  window.spiderLive={getState:()=>lastView,getMeta:()=>meta,renderer,reference,control,loadReplay:localReplay,selectEvent,render:()=>render(true)};
   drawer(false,{focus:false});
   try{
     if(remote){if(!token)throw Error('预览令牌缺失。请使用 Agent 返回的完整预览地址。');receiveSnapshot(await api(''));connect();}

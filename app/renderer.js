@@ -16,6 +16,14 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const fract = value => value - Math.floor(value);
 const random = seed => fract(Math.sin(seed * 127.1 + 311.7) * 43758.5453123);
 const routeColor = route => PALETTE[route] || PALETTE.muted;
+// 会话复用时路由集合/标签/颜色由 state 注入(参考演示保持默认 3 路由行为不变)。
+const CJKW = /[\u1100-\u206F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+export const textUnits = value => { let units = 0; for (const ch of String(value)) units += CJKW.test(ch) ? 2 : 1; return units; };
+const routeList = state => state.routes || ROUTES;
+const colorOf = (state, route) => state.routeColors?.[route] || routeColor(route);
+const labelOf = (state, route) => state.routeLabels?.[route] || (route === 'model' ? 'sonnet 5.5' : route);
+// 分箱卡片纵向布局: 3 张卡保持参考演示坐标(y=110/345/580), 更多路由时按同区间等分。
+const cardStep = n => (n === 3 ? 235 : (735 - 150) / Math.max(1, n - 1));
 
 /** A deterministic, resolution-independent recreation of the reference terminal. */
 export class Renderer {
@@ -27,11 +35,15 @@ export class Renderer {
     this.layout = null;
     this.lastState = null;
     this.dpr = 0;
+    // 微交互层: hoverIndex 由 live.js 的 pointermove 命中路由写入; pulse 记录点击处,
+    // 画布每帧重绘 => 0.35s 扩散圆环自然消散, 不引入额外动画循环。
+    this.hoverIndex = null;
+    this.pulse = null;
     this.handleClick = event => {
       const index = this.hitTest(event.clientX, event.clientY);
       if (index !== null && this.onSelect) this.onSelect(index);
     };
-    canvas.addEventListener('click', this.handleClick);
+    if (typeof onSelect === 'function') canvas.addEventListener('click', this.handleClick);   // 非函数 onSelect 时由调用方自行路由命中(共享 canvas 多渲染器场景)
     this.resize();
   }
 
@@ -73,14 +85,18 @@ export class Renderer {
   }
 
   makeLayout(state) {
-    if (this.layout?.source === state.sourceLines && this.layout?.tokens === state.tokens) return this.layout;
+    if (this.layout?.source === state.sourceLines && this.layout?.tokens === state.tokens && this.layout?.mode === state.mode) return this.layout;
     const lines = state.sourceLines || [];
     const tokens = state.tokens || [];
     this.font(12.5);
+    // 参考演示沿用 7.5px 定宽排布; 会话(常含中文)按实测宽度换行与定位, 避免重叠。
+    const measured = state.mode !== 'reference';
     const charWidth = this.ctx.measureText('M').width;
-    const maxColumns = state.mode === 'reference' ? 10000 : Math.floor(281 / charWidth);
+    const columnWidth = text => { this.font(12.5); return this.ctx.measureText(text).width; };
+    const maxColumns = state.mode === 'reference' ? 10000 : measured ? 281 : Math.floor(281 / charWidth);
     const rows = [];
     const placements = [];
+    const continuations = [];                                       // 硬拆片段: placements 只放首段(蜘蛛锚点), 其余段绘制/命中仍生效
     const byLine = new Map();
     tokens.forEach((token, index) => {
       const sourceLine = Math.max(0, Number(token.line) || 0);
@@ -89,6 +105,49 @@ export class Renderer {
     });
     lines.forEach((line, lineIndex) => {
       const value = String(line).replace(/\t/g, '  ');
+      if (measured) {
+        // 会话模式(常含中文): 直接以 token 为排布单元做词流排版——逐词累计实测宽度、超列宽换行,
+        // 词框 x/w 与行文本共用同一累计坐标, 结构上保证每词独占区间、互不重叠。
+        const spaceWidth = Math.max(4, columnWidth(' '));
+        // 超列宽的单词(如无空格长串)按二分宽度硬拆成多段续排(终端 word-break 观感), 段间不留空格;
+        // 各段共享同一 token index, 点击任一段都命中同一事件。
+        const fitSegments = word => {
+          const segments = [];
+          let rest = word;
+          while (rest.length > 1) {
+            let lo = 1, hi = rest.length;
+            while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (columnWidth(rest.slice(0, mid)) > maxColumns) hi = mid - 1; else lo = mid; }
+            segments.push(rest.slice(0, lo)); rest = rest.slice(lo);
+          }
+          if (rest.length) segments.push(rest);
+          return segments;
+        };
+        let parts = [], x = 0, continuation = false;
+        const flush = () => {
+          const row = rows.length;
+          let text = ''; parts.forEach((part, k) => { text += k && !part.glue ? ' ' : ''; text += part.word; });   // 硬拆片段间无空格, 与词框坐标一致
+          rows.push({ text, line: lineIndex, continuation });
+          for (const part of parts) {
+            const entry = { index: part.index, word: part.word, row, line: lineIndex, x: 69 + part.x, w: part.w };
+            if (placements[part.index]) continuations.push(entry); else placements[part.index] = entry;
+          }
+          parts = []; x = 0; continuation = true;
+        };
+        const push = (index, word, glue) => {
+          const w = Math.max(5, columnWidth(word));
+          if (parts.length && (glue ? x + w > maxColumns : x + spaceWidth + w > maxColumns)) flush();
+          if (parts.length && !glue) x += spaceWidth;
+          parts.push({ index, word, x, w, glue });
+          x += w;
+        };
+        for (const token of byLine.get(lineIndex) || []) {
+          const word = String(token.word);
+          if (word.length > 1 && columnWidth(word) > maxColumns) { fitSegments(word).forEach((segment, k) => push(token.index, segment, k > 0)); continue; }
+          push(token.index, word, false);
+        }
+        flush();
+        return;
+      }
       const chunks = [];
       let cursor = 0;
       while (cursor < value.length || chunks.length === 0) {
@@ -108,10 +167,9 @@ export class Renderer {
         if (char < 0) char = tokenCursor;
         tokenCursor = char + token.word.length;
         const chunk = chunks.find(part => char >= part.start && char < part.end) || chunks[chunks.length - 1];
-        const column = char - chunk.start;
         placements[token.index] = {
           index: token.index, word: token.word, row: chunk.row, line: lineIndex,
-          x: 69 + column * charWidth, w: Math.max(charWidth * token.word.length, 5),
+          x: 69 + (char - chunk.start) * charWidth, w: Math.max(charWidth * token.word.length, 5),
         };
       }
     });
@@ -127,7 +185,7 @@ export class Renderer {
         column += word.length + 1;
       });
     }
-    this.layout = { source: state.sourceLines, tokens: state.tokens, rows, placements, charWidth };
+    this.layout = { source: state.sourceLines, tokens: state.tokens, rows, placements, continuations, charWidth };
     return this.layout;
   }
 
@@ -149,8 +207,11 @@ export class Renderer {
     // The creature and camera follow the measured source trajectory. Selecting
     // a word changes inspection only, so it cannot teleport the creature.
     const maxScroll = Math.max(0, layout.rows.length - 37);
-    const progressScroll = Math.floor(clamp((state.read || 0) / Math.max(1, state.total || 195), 0, 1) * (maxScroll + 3));
-    const pose = referencePose(state.elapsed || 0);
+    // 跟随进度按“已铺到词墙的事件数”(gridTotal) 收敛: 超过 600 事件上限时 total 更大,
+    // 若用 total 作分母, 进度永远到不了 100%, 编辑器就滚不到最后一批词。
+    const progressTotal = Math.max(1, state.gridTotal || state.total || 195);
+    const progressScroll = Math.floor(clamp((state.read || 0) / progressTotal, 0, 1) * (maxScroll + 3));
+    const pose = referencePose(state.poseTime ?? (state.elapsed || 0));   // 会话回放: 姿态按参考周期循环巡游
     const scroll = state.mode === 'reference' ? pose.scroll : progressScroll;
     this.motionState = {...pose,scroll,flightCount:(state.flights || []).length};
     const baseline = state.mode === 'reference' ? 137 : 108;
@@ -172,6 +233,37 @@ export class Renderer {
     this.drawSphere(state);
     this.drawThink(state, counts);
     this.drawStatus(state, counts, decisions.length, scroll);
+    this.drawInteractionLayer();
+  }
+
+  // 微交互覆盖层(所有面板画完后压顶): hover 虚线轻框 + 点击扩散圆环。
+  // 复用 this.regions(与 hitTest/点击同一来源), 坐标零错位; 圆环时长由帧时间自然消散。
+  drawInteractionLayer() {
+    const c = this.ctx;
+    if (this.hoverIndex != null) {
+      const region = this.regions.find(item => item.index === this.hoverIndex);
+      if (region) {
+        c.strokeStyle = 'rgba(255,255,255,.5)'; c.lineWidth = 1; c.setLineDash([3, 3]);
+        c.strokeRect(region.x - .5, region.y - .5, region.w + 1, region.h + 1);
+        c.setLineDash([]);
+      }
+    }
+    if (this.pulse) {
+      const age = ((globalThis.performance?.now() || 0) - this.pulse.t) / 1000;
+      if (age > .42) this.pulse = null;
+      else {
+        const p = age / .42;
+        c.beginPath(); c.arc(this.pulse.x, this.pulse.y, 4 + p * 16, 0, Math.PI * 2);
+        c.strokeStyle = `rgba(242,60,131,${((1 - p) * .8).toFixed(3)})`; c.lineWidth = 1.6; c.stroke();
+      }
+    }
+  }
+
+  // 客户端坐标 → 画布布局坐标(与 hitTest 同一映射), 供点击脉冲定位。
+  toCanvas(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    return { x: (clientX - r.left) / r.width * WIDTH, y: (clientY - r.top) / r.height * HEIGHT };
   }
 
   drawHeader(state, decisions, counts) {
@@ -180,13 +272,14 @@ export class Renderer {
     this.text('// EVERY WORD, ONE FORK', 198, 30, PALETTE.pink, 22, 700);
     this.text('every word becomes a typed question · code takes the sure ones,', 16, 48, '#79797f', 10.6);
     this.text('sonnet 5.5 the hard ones, you the risky ones.', 16, 61, '#79797f', 10.6);
+    const routes = routeList(state);
     const columns = [
       ['words', state.read || 0, '#ededed'], ['forks', decisions.length, PALETTE.pink],
-      ['code', counts.code || 0, PALETTE.code], ['sonnet', counts.model || 0, PALETTE.model],
-      ['you', counts.you || 0, PALETTE.you],
+      ...routes.map(route => [labelOf(state, route), counts[route] || 0, colorOf(state, route)]),
     ];
+    const step = 77, x0 = 699 + (5 - columns.length) * step;
     columns.forEach(([label, value, color], i) => {
-      const x = 699 + i * 77;
+      const x = x0 + i * step;
       this.text(label, x, 20, '#79777e', 9);
       this.text(value, x, 44, color, 20, 700);
     });
@@ -204,6 +297,10 @@ export class Renderer {
     this.text(`ln ${Math.floor(scroll) + 1}`, 350, 87, '#77767d', 10, 400, 'right');
     c.save(); c.beginPath(); c.rect(16, 94, 344, 735); c.clip();
     this.font(12.5);
+    if (!layout.rows.length && state.mode === 'session') {          // 空态: 等待首个上报事件, 不再一片空白
+      this.text('# 等待 Agent 上报第一个事件…', 69, 128, '#5b5862', 12.5);
+      this.text('每个事件会铺成一行词框, 到达瞬间粉色高亮。', 69, 150, '#43414a', 11);
+    }
     const baseline = state.mode === 'reference' ? 137 : 108;
     for (let row = Math.max(0,Math.floor(scroll)-2); row < Math.min(layout.rows.length, scroll + 39); row++) {
       const item = layout.rows[row];
@@ -212,19 +309,23 @@ export class Renderer {
       const isTag = /^\s*<\/?/.test(item.text);
       this.text(item.text, 69, y, isTag ? '#aa8f91' : '#dddddf', 12.5);
     }
-    for (const placement of layout.placements) {
+    const wordRoutes = state.wordRoutes || null, wordArrivals = state.wordArrivals || null, wordFailed = state.wordFailed || null;
+    for (const placement of layout.continuations ? [...layout.placements, ...layout.continuations] : layout.placements) {
       if (!placement || placement.row < scroll - 2 || placement.row > scroll + 38) continue;
       const y = baseline + (placement.row - scroll) * 19.1;
       const decision = byToken.get(placement.index);
       const selected = state.selectedIndex === placement.index;
+      // 会话模式: 每个词按所属事件的路由着色(参考图满屏词框观感); 参考演示仍只给 decision 词框。
+      const route = decision?.route ?? (wordRoutes ? wordRoutes[placement.index] : undefined);
+      const start = decision ? decision.launchTime : (wordArrivals ? wordArrivals[placement.index] : undefined);
+      const boxed = route !== undefined && start !== undefined && state.elapsed >= start;
       const visible = !decision || state.routeFilter === 'all' || !state.routeFilter || state.routeFilter === decision.route;
-      const route = decision?.route;
-      const selectedColor = routeColor(route);
+      const selectedColor = colorOf(state, route);
       c.globalAlpha = visible ? 1 : .24;
-      if (decision && state.elapsed-decision.launchTime<.18) {
-        c.fillStyle=PALETTE.pink;c.fillRect(placement.x-1,y-12.2,placement.w+2,16.2);
-        this.text(placement.word,placement.x,y,'#190a13',12.5);
-      } else if (decision) {
+      if (boxed && state.elapsed - start < .18) {
+        c.fillStyle = PALETTE.pink; c.fillRect(placement.x - 1, y - 12.2, placement.w + 2, 16.2);
+        this.text(placement.word, placement.x, y, '#190a13', 12.5);
+      } else if (boxed) {
         const filled = random(placement.index + 22) > .29;
         if (filled) {
           c.fillStyle = selectedColor;
@@ -242,7 +343,16 @@ export class Renderer {
         c.globalAlpha = 1; c.strokeStyle = '#ffffff'; c.lineWidth = 1.4;
         c.strokeRect(placement.x - 3, y - 15, placement.w + 6, 21);
       }
-      this.regions.push({ index: placement.index, x: placement.x - 3, y: y - 15, w: placement.w + 6, h: 20 });
+      // 会话模式: 事件失败的词框右上加红色角标(与列表渲染器同款观感), 点击仍打开检查器看原因。
+      if (boxed && wordFailed?.[placement.index]) {
+        c.globalAlpha = visible ? 1 : .24; c.fillStyle = '#ff685e';
+        c.beginPath(); c.arc(placement.x + placement.w + 2.5, y - 12, 2.6, 0, Math.PI * 2); c.fill();
+      }
+      // 命中区按编辑器裁剪区(94..829)收敛: 滚动到可视区外的词框不能点中, 否则点标题附近会选中不可见词。
+      const hitTop = Math.max(94, y - 15), hitBottom = Math.min(829, y + 5);
+      if (hitBottom - hitTop >= 6) {
+        this.regions.push({ index: placement.index, x: placement.x - 3, y: hitTop, w: placement.w + 6, h: hitBottom - hitTop });
+      }
     }
     c.globalAlpha = 1;
     const fade = c.createLinearGradient(0, 800, 0, 831);
@@ -254,8 +364,8 @@ export class Renderer {
 
   drawWeb(state, layout, byToken, scroll, tokenPoint) {
     const c = this.ctx, elapsed = Number(state.elapsed) || 0;
-    const total = state.mode === 'reference' ? state.routeTotal || 175 : Math.max(1,Math.min(280,state.total || 195));
-    const routed = new Map((state.decisions || []).map(d => [d.slot,d]));
+    const total=state.routeTotal || (state.mode==='reference'?175:Math.max(1,Math.min(280,state.total || 195)));
+    const routed=new Map((state.decisions||[]).map(d=>[d.slot,d]));
     c.save(); c.beginPath(); c.rect(359,68,536,781); c.clip();
     // A fine fan exists before any word is read. Independent low-frequency
     // control-point motion gives the strands a soft local sway.
@@ -277,7 +387,7 @@ export class Renderer {
       const sx=x-153-random(slot+51)*20, sy=y+(y-450)*.18+(random(slot+33)-.5)*7;
       const visible = !d || !state.routeFilter || state.routeFilter==='all' || state.routeFilter===d.route;
       const selected = d && state.selectedIndex===d.index;
-      const color = d ? routeColor(d.route) : '#55505a';
+      const color = d ? colorOf(state,d.route) : '#55505a';
       c.globalAlpha = d ? visible ? .88 : .12 : .35;
       this.line(sx,sy,x,y,color,selected?2.1:d?1.3:.65);
       if (d && visible) {
@@ -305,7 +415,7 @@ export class Renderer {
   }
 
   drawFlights(state, layout, tokenPoint) {
-    const c=this.ctx, total=state.mode==='reference'?state.routeTotal || 175:Math.max(1,Math.min(280,state.total || 195));
+    const c=this.ctx, total=state.routeTotal || (state.mode==='reference'?175:Math.max(1,Math.min(280,state.total || 195)));
     this.flightPoints=[];
     c.save();c.beginPath();c.rect(17,94,878,754);c.clip();
     for(const d of state.flights || []) {
@@ -323,7 +433,7 @@ export class Renderer {
       c.beginPath();c.moveTo(origin.x,origin.y);
       c.bezierCurveTo(controlA.x,controlA.y,controlB.x,controlB.y,end.x,end.y);
       c.strokeStyle='rgba(242,60,131,.44)';c.lineWidth=.85;c.stroke();
-      const label=String(d.word).slice(0,18);this.font(12.5);
+      const label=String(placement?.word ?? d.word).slice(0,18);this.font(12.5);   // 飞行词块与词墙同款: 显示锚点词而非整条标签
       const w=c.measureText(label).width+8;
       c.fillStyle=PALETTE.pink;c.fillRect(point.x-w/2,point.y-10,w,20);
       this.text(label,point.x-w/2+4,point.y+4,'#210b16',12.5);
@@ -363,17 +473,18 @@ export class Renderer {
 
   drawRoutingParticles(state) {
     const c=this.ctx,total=state.routeTotal || Math.max(1,Math.min(280,state.total));
+    const routes=routeList(state), step=cardStep(routes.length);
     c.save();c.beginPath();c.rect(766,70,136,779);c.clip();
     for(const d of state.decisions || []) {
       const age=state.elapsed-d.time;
       if(age<0 || age>.7)continue;
       if(state.routeFilter && state.routeFilter!=='all' && state.routeFilter!==d.route)continue;
       const sy=70+(d.slot+.5)/total*778,sx=arcX(sy)+52;
-      const ty=185+ROUTES.indexOf(d.route)*235;
+      const ty=185+routes.indexOf(d.route)*step;
       for(let k=0;k<2;k++) {
         const p=(age-k*.065)/.56;if(p<0 || p>1)continue;
         const x=sx+(892-sx)*p,y=sy+(ty-sy)*p+(random(d.index+k+70)-.5)*18*Math.sin(p*Math.PI);
-        c.globalAlpha=Math.min(1,p*12,(1-p)*7);c.fillStyle=routeColor(d.route);
+        c.globalAlpha=Math.min(1,p*12,(1-p)*7);c.fillStyle=colorOf(state,d.route);
         c.fillRect(x-1.8,y-1.8,3.6,3.6);
         c.globalAlpha*=.2;c.fillRect(x-3.8,y-3.8,7.6,7.6);
       }
@@ -383,11 +494,12 @@ export class Renderer {
 
   drawRouteCards(state, counts, latest) {
     const c = this.ctx;
-    const descriptions = ['no model call', 'the model thinks', 'your call'];
-    const labels = [`if p ≥ ${Number(state.threshold || .95).toFixed(2)}`, `p < ${Number(state.threshold || .95).toFixed(2)}`, 'approval only'];
-    ROUTES.forEach((route, i) => {
-      const x = 905; const y = 110 + i * 235; const w = 160; const h = 150;
-      const color = routeColor(route);
+    const routes = routeList(state), step = cardStep(routes.length);
+    const descriptions = state.routeNotes || ['no model call', 'the model thinks', 'your call'];
+    const labels = state.routeGates || routes.map(route => route === 'model' ? `p < ${Number(state.threshold || .95).toFixed(2)}` : route === 'code' ? `if p ≥ ${Number(state.threshold || .95).toFixed(2)}` : 'approval only');
+    routes.forEach((route, i) => {
+      const x = 905; const y = 110 + i * step; const w = 160; const h = Math.min(150, step > 0 ? step - 25 : 150);
+      const color = colorOf(state, route);
       const recent = (state.decisions || []).some(d=>d.route===route && state.elapsed-d.time<.22);
       if (recent) {
         c.strokeStyle = color; c.globalAlpha = .25; c.lineWidth = 2;
@@ -397,9 +509,9 @@ export class Renderer {
       c.strokeStyle = color; c.lineWidth = recent ? 2 : 1; c.strokeRect(x + .5, y + .5, w - 1, h - 1);
       c.fillStyle = color; c.fillRect(x + 1, y + 1, w - 2, 19);
       this.text(labels[i], x + 7, y + 14, '#0b1110', 10, 700);
-      this.text(`→ ${route === 'model' ? 'sonnet 5.5' : route}`, x + 12, y + 48, '#f2f0f1', 16, 700);
-      this.text(counts[route] || 0, x + w - 11, y + 97, color, 42, 700, 'right');
-      this.text(descriptions[i], x + 10, y + 138, '#7e7b83', 10);
+      this.text(`→ ${labelOf(state, route)}`, x + 12, y + 48, '#f2f0f1', 16, 700);
+      this.text(counts[route] || 0, x + w - 11, y + Math.min(97, h - 41), color, 42, 700, 'right');
+      this.text(descriptions[i] ?? route, x + 10, y + h - 12, '#7e7b83', 10);
     });
   }
 
@@ -417,14 +529,16 @@ export class Renderer {
         c.fillRect(18, y - 14, 676, 19);
       }
       this.text(`${Number(item.time || 0).toFixed(2).padStart(5, '0')}s`, 26, y, '#8e8991', 10.5);
-      const word = String(item.word).slice(0, 19);
       this.font(11);
+      let word = String(item.word).slice(0, 19);
+      while (word.length > 1 && this.ctx.measureText(word).width > 150) word = word.slice(0, -1);   // 中文长标签按宽度截断, 不侵入问题列
       const tagWidth = this.ctx.measureText(word).width + 7;
       c.fillStyle = PALETTE.pink; c.fillRect(95, y - 11.5, tagWidth, 15);
       this.text(word, 98, y, '#140a11', 11);
       this.text(String(item.question || QUESTIONS[item.index % QUESTIONS.length]).slice(0, 29), 260, y, '#e8e5e9', 10.6);
-      this.text(`p ${Number(item.score).toFixed(3)}`, 470, y, routeColor(item.route), 10.6);
-      this.text(`→ ${item.route === 'model' ? 'sonnet 5.5' : item.route}`, 562, y, routeColor(item.route), 10.6);
+      const scoreKnown = item.score !== null && item.score !== undefined && !item.demoScore;
+      this.text(scoreKnown ? `p ${Number(item.score).toFixed(3)}` : 'p 未提供', 470, y, colorOf(state, item.route), 10.6);
+      this.text(`→ ${labelOf(state, item.route)}`, 562, y, colorOf(state, item.route), 10.6);
       this.regions.push({ index: item.index, x: 18, y: y - 15, w: 676, h: 19 });
     });
     if (!last.length) this.text('awaiting the first fork_', 26, 905, '#77737b', 11);
@@ -436,14 +550,15 @@ export class Renderer {
     this.panel(712, 858, 352, 212, 'routed this session');
     this.text(decisions.length, 731, 946, PALETTE.pink, 64, 700);
     this.text(`of ${state.total || 195} words in the prompt`, 731, 968, '#85818a', 11);
-    ROUTES.forEach((route, i) => {
-      const y = 995 + i * 22;
-      this.text(route === 'model' ? 'sonnet 5.5' : route, 731, y, '#e0dde3', 11);
+    const routes = routeList(state), rows = routes.length;
+    routes.forEach((route, i) => {
+      const y = 995 + i * (rows === 3 ? 22 : Math.min(22, 66 / Math.max(1, rows - 1)));
+      this.text(labelOf(state, route), 731, y, '#e0dde3', 11);
       c.fillStyle = '#29282e'; c.fillRect(830, y - 8, 170, 7);
       const width = Math.max(counts[route] ? 4 : 0, 170 * (counts[route] || 0) / Math.max(1, decisions.length));
-      c.fillStyle = routeColor(route); c.fillRect(830, y - 8, width, 7);
+      c.fillStyle = colorOf(state, route); c.fillRect(830, y - 8, width, 7);
       if (width > 4) { c.fillStyle = 'rgba(255,255,255,.18)'; c.fillRect(830 + width - 4, y - 8, 4, 7); }
-      this.text(counts[route] || 0, 1050, y, routeColor(route), 11, 400, 'right');
+      this.text(counts[route] || 0, 1050, y, colorOf(state, route), 11, 400, 'right');
     });
   }
 
@@ -457,25 +572,50 @@ export class Renderer {
     c.setLineDash([3, 3]); this.line(x, thresholdY, x + w, thresholdY, '#408f75', .8); c.setLineDash([]);
     this.text(`${Number(state.threshold || .95).toFixed(2)} → code`, x + w - 1, thresholdY + 2, '#469b7d', 8.6, 400, 'right');
     if (values.length) {
-      const points = values.map((item, index) => ({ x: x + index / 39 * w, y: y + (1 - item.score) * h, item }));
-      c.beginPath(); c.moveTo(points[0].x, y + h);
-      points.forEach(point => c.lineTo(point.x, point.y));
-      c.lineTo(points[points.length - 1].x, y + h); c.closePath();
-      const fade = c.createLinearGradient(0, y, 0, y + h);
-      fade.addColorStop(0, 'rgba(237,48,126,.06)'); fade.addColorStop(1, 'rgba(237,48,126,.16)');
-      c.fillStyle = fade; c.fill();
-      c.beginPath(); points.forEach((point, index) => index ? c.lineTo(point.x, point.y) : c.moveTo(point.x, point.y));
-      c.strokeStyle = PALETTE.pink; c.lineWidth = 1.35; c.stroke();
-      points.forEach(point => { c.fillStyle = routeColor(point.item.route); c.fillRect(point.x - 1.7, point.y - 1.7, 3.4, 3.4); });
+      const scored = values.filter(item => item.score !== null && item.score !== undefined && !item.demoScore);
+      const points = scored.map((item, index) => ({ x: x + index / Math.max(1, scored.length - 1) * w, y: y + (1 - item.score) * h, item }));
+      if (points.length) {
+        c.beginPath(); c.moveTo(points[0].x, y + h);
+        points.forEach(point => c.lineTo(point.x, point.y));
+        c.lineTo(points[points.length - 1].x, y + h); c.closePath();
+        const fade = c.createLinearGradient(0, y, 0, y + h);
+        fade.addColorStop(0, 'rgba(237,48,126,.06)'); fade.addColorStop(1, 'rgba(237,48,126,.16)');
+        c.fillStyle = fade; c.fill();
+        c.beginPath(); points.forEach((point, index) => index ? c.lineTo(point.x, point.y) : c.moveTo(point.x, point.y));
+        c.strokeStyle = PALETTE.pink; c.lineWidth = 1.35; c.stroke();
+        points.forEach(point => { c.fillStyle = colorOf(state, point.item.route); c.fillRect(point.x - 1.7, point.y - 1.7, 3.4, 3.4); });
+      }
+      if (state.hasScores === false) this.text('p 未上报 · 轨迹仅供节奏参考', x + 4, y + 12, '#7c7883', 9);
     }
-    const avg = decisions.length ? decisions.reduce((sum, item) => sum + item.score, 0) / decisions.length : 0;
-    this.text(`avg ${avg.toFixed(3)}`, 26, 1301, '#f2f0f2', 11, 700);
+    const scoredAll = decisions.filter(item => item.score !== null && item.score !== undefined && !item.demoScore);
+    const avg = scoredAll.length ? scoredAll.reduce((sum, item) => sum + item.score, 0) / scoredAll.length : 0;
+    this.text(scoredAll.length ? `avg ${avg.toFixed(3)}` : 'avg 未提供', 26, 1301, '#f2f0f2', 11, 700);
   }
 
   drawWordGrid(state, layout, byToken) {
     const c = this.ctx;
     this.panel(282, 1080, 256, 236, 'words read', 'one dot = one word');
-    const total = state.total || 195;
+    if (state.gridEvents) {                              // 会话模式: 一个点 = 一个事件(与计数口径一致)
+      const items = state.gridEvents, total = items.length;
+      const columns = 16, rows = Math.ceil(total / columns);
+      const spacingX = 14.5, spacingY = Math.min(16.5, 171 / Math.max(1, rows - 1));
+      for (let position = 0; position < total; position++) {
+        const item = items[position], x = 298 + position % columns * spacingX, y = 1113 + Math.floor(position / columns) * spacingY;
+        const arrived = state.elapsed >= item.time, scanned = state.elapsed >= item.launchTime;
+        const color = arrived ? colorOf(state, item.route) : scanned ? PALETTE.pink : '#29292f';
+        const visible = !state.routeFilter || state.routeFilter === 'all' || !arrived || item.route === state.routeFilter;
+        c.globalAlpha = visible ? 1 : .19;
+        c.fillStyle = color; c.beginPath(); c.arc(x, y, arrived || scanned ? 3.8 : 2.5, 0, Math.PI * 2); c.fill();
+        if (item.index != null && state.selectedIndex === item.index) { c.strokeStyle = '#fff'; c.lineWidth = 1; c.beginPath(); c.arc(x, y, 6, 0, Math.PI * 2); c.stroke(); }
+        if (item.index != null) this.regions.push({ index: item.index, x: x - 6, y: y - 7, w: 12, h: 14 });
+      }
+      c.globalAlpha = 1;
+      // 点数受可视上限(600)约束, 但分母要让出真实总量: 否则会显示成 600/600 的 100% 覆盖,
+      // 与 routed 面板的 "600 of 650" 及覆盖率球口径互相矛盾。
+      this.text(`${state.read || 0} / ${Math.max(total, state.total || 0)}`, 292, 1301, '#f2f0f2', 11, 700);
+      return;
+    }
+    const total = state.gridTotal || state.total || 195;
     const columns = 16; const rows = Math.ceil(total / columns);
     const spacingX = 14.5; const spacingY = Math.min(16.5, 171 / Math.max(1, rows - 1));
     const routed=new Map((state.decisions || []).map(d=>[d.index,d]));
@@ -485,14 +625,14 @@ export class Renderer {
       const read = byToken.has(tokenIndex);
       const x = 298 + index % columns * spacingX;
       const y = 1113 + Math.floor(index / columns) * spacingY;
-      c.fillStyle = decision ? routeColor(decision.route) : read ? PALETTE.pink : '#29292f';
+      c.fillStyle = decision ? colorOf(state, decision.route) : read ? PALETTE.pink : '#29292f';
       c.globalAlpha = !state.routeFilter || state.routeFilter === 'all' || !decision || decision.route === state.routeFilter ? 1 : .19;
       c.beginPath(); c.arc(x, y, read || decision ? 3.8 : 2.5, 0, Math.PI * 2); c.fill();
       if (state.selectedIndex === tokenIndex) { c.strokeStyle = '#fff'; c.lineWidth = 1; c.beginPath(); c.arc(x, y, 6, 0, Math.PI * 2); c.stroke(); }
       if (tokenIndex < layout.placements.length) this.regions.push({ index: tokenIndex, x: x - 6, y: y - 7, w: 12, h: 14 });
     }
     c.globalAlpha = 1;
-    this.text(`${state.read || 0} / ${total}`, 292, 1301, '#f2f0f2', 11, 700);
+    this.text(`${state.read || 0} / ${Math.max(total, state.total || 0)}`, 292, 1301, '#f2f0f2', 11, 700);
   }
 
   drawSphere(state) {
@@ -543,14 +683,16 @@ export class Renderer {
   drawThink(state, counts) {
     const c = this.ctx;
     this.panel(814, 1080, 250, 236, 'who had to think');
-    ROUTES.forEach((route, i) => {
-      const y = 1119 + i * 49;
-      c.fillStyle = routeColor(route); c.fillRect(826, y - 10, 4, 34);
-      this.text(route === 'model' ? 'sonnet 5.5' : route, 838, y, routeColor(route), 12, 700);
-      this.text(`${counts[route] || 0} ${['if-statements', 'hard calls', 'approvals'][i]}`, 838, y + 18, '#e7e2e7', 11);
+    const routes = routeList(state);
+    const descriptions = state.routeNotes || ['if-statements', 'hard calls', 'approvals'];
+    routes.forEach((route, i) => {
+      const y = 1119 + i * (routes.length === 3 ? 49 : Math.min(49, 150 / Math.max(1, routes.length - 1)));
+      c.fillStyle = colorOf(state, route); c.fillRect(826, y - 10, 4, 34);
+      this.text(labelOf(state, route), 838, y, colorOf(state, route), 12, 700);
+      this.text(`${counts[route] || 0} ${descriptions[i] ?? route}`, 838, y + 18, '#e7e2e7', 11);
     });
-    this.text('the model only thinks', 826, 1286, '#f4eff4', 11, 700);
-    this.text("where code can't decide", 826, 1303, PALETTE.pink, 11, 700);
+    this.text(state.routeTagline?.[0] || 'the model only thinks', 826, 1286, '#f4eff4', 11, 700);
+    this.text(state.routeTagline?.[1] || "where code can't decide", 826, 1303, PALETTE.pink, 11, 700);
   }
 
   drawStatus(state, counts, forks, scroll) {
@@ -558,7 +700,9 @@ export class Renderer {
     c.fillStyle = '#161619'; c.fillRect(0, 1326, 1080, 24);
     this.line(0, 1326.5, 1080, 1326.5, '#25252a');
     this.text(`spider@studio · 16 legs · 22 tentacles · ~/studio.prompt · ln ${Math.floor(scroll) + 1}`, 15, 1342, '#7b7880', 10.5);
-    this.text(`forks ${forks} · code ${counts.code || 0} · sonnet ${counts.model || 0} · you ${counts.you || 0}`, 1065, 1342, PALETTE.pink, 10.5, 400, 'right');
+    const routes = routeList(state);
+    const right = `forks ${forks} · ${routes.map(route => `${labelOf(state, route)} ${counts[route] || 0}`).join(' · ')}`;
+    this.text(right, 1065, 1342, PALETTE.pink, 10.5, 400, 'right');
   }
 
   hitTest(clientX, clientY) {

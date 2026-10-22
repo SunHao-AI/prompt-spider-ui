@@ -12,7 +12,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/body-motion.test.mjs tests/model.test.mjs tests/motion.test.mjs tests/probes.test.mjs tests/session.test.mjs tests/hub.test.mjs tests/live-ui.test.mjs",
+    "test": "node --test tests/body-motion.test.mjs tests/model.test.mjs tests/motion.test.mjs tests/probes.test.mjs tests/session.test.mjs tests/hub.test.mjs tests/live-ui.test.mjs tests/reference-session.test.mjs tests/reference-layout.test.mjs",
     "test:mcp": "npm --prefix mcp test"
   },
   "engines": { "node": ">=20" }

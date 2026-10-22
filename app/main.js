@@ -109,7 +109,7 @@ $('#threshold').addEventListener('input', event => {
 });
 document.querySelectorAll('[data-route]').forEach(button => button.addEventListener('click', () => {
   routeFilter = button.dataset.route;
-  document.querySelectorAll('[data-route]').forEach(item => item.classList.toggle('active', item === button)); render();
+  document.querySelectorAll('[data-route]').forEach(item => { const on = item === button; item.classList.toggle('active', on); item.setAttribute('aria-pressed', String(on)); }); render();
 }));
 $('#fitBtn').addEventListener('click', () => { const zoom = document.body.classList.toggle('zoom'); $('#fitBtn').textContent = zoom ? '适应窗口' : '放大画布'; $('#fitBtn').setAttribute('aria-pressed', zoom); });
 $('#inspectorToggle').addEventListener('click', () => setDrawerOpen(!drawerOpen));

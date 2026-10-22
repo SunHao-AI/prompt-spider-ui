@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LIVE_LAYOUTS, livePose, eventPlacement, hitEvent, resolveCursor, parseSseFrames, orbitTarget, poseFromOrbit, easeOrbit } from '../app/live-layout.js';
+import { LIVE_LAYOUTS, livePose, eventPlacement, hitEvent, resolveCursor, parseSseFrames, orbitTarget, poseFromOrbit, easeOrbit, wallArea, wallScrollTarget, easeValue } from '../app/live-layout.js';
 
 test('live layouts keep the scene, details and hit regions inside each stage', () => {
   assert.deepEqual(Object.values(LIVE_LAYOUTS).map(x => [x.width, x.height]), [[1080, 1350], [1600, 900], [1080, 1080], [1600, 900]]);
@@ -23,6 +23,35 @@ test('live spider movement is continuous across loops and long sessions', () => 
     assert.ok(Number.isFinite(after.vx + after.vy));
   }
   assert.deepEqual(livePose(layout, 1, true), livePose(layout, 2000, true));
+});
+
+test('wall word flow wraps by width and scrolls to keep the latest row in view', () => {
+  const wall = LIVE_LAYOUTS.wall, area = wallArea(wall.scene);
+  const long = Array.from({ length: 30 }, (_, i) => ({ id: `w-${i}`, label: `token-${i}-padding`, route: 'code', status: 'completed' }));
+  const regions = eventPlacement(wall, long, label => label.length * 7);
+  const gutter = area.x + 46, maxWidth = area.w - 46 - 18;
+  assert.ok(regions.length === 30);
+  assert.ok(regions.some(r => r.row > 0), '长词团必须换行(流式词墙)');
+  for (const r of regions) {
+    assert.ok(r.x >= gutter && r.x + r.w <= gutter + maxWidth + 0.01, '词元不越出编辑列');
+    assert.equal(hitEvent(regions, r.x + r.w / 2, r.cy), r.event.id);   // 命中区落在矩形框上
+  }
+  // 滚动目标: 行数不足一屏不滚, 超过后随最新行线性增长(整墙向上滚)。
+  const shortScroll = wallScrollTarget(regions.slice(0, 3), area);
+  const fullScroll = wallScrollTarget(regions, area);
+  assert.equal(shortScroll, 0);
+  const focusY = regions[regions.length - 1].y, visibleH = area.h - 30 - 8;
+  assert.equal(fullScroll, Math.max(0, focusY - 30 - 8 - visibleH * .42));   // 最新行停在可视区约 42% 高度
+  assert.ok(regions[regions.length - 1].row > 0);
+});
+
+test('easeValue glides toward targets without overshoot', () => {
+  let cur = 0; const target = 200;
+  let prev = Infinity;
+  for (let i = 0; i < 90; i++) { cur = easeValue(cur, target, 1 / 60); assert.ok(cur <= target && target - cur < prev); prev = target - cur; }
+  assert.ok(target - cur < 8);                        // 1.5s 后残差 ≈ 200·e^(-1.5/0.4) ≈ 4.5
+  assert.equal(easeValue(120, 120, 0.5), 120);        // 目标不动则不动
+  assert.equal(easeValue(0, target, 30), target);     // dt→∞ 精确落位
 });
 
 test('cursor follows server anchor without resetting live data on animation loops', () => {
