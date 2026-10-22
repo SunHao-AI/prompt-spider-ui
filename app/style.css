@@ -67,12 +67,14 @@ body.chromeless #scene{height:100%;width:auto;max-width:100%}
   body:not(.immersive):not(.chromeless) .view-heading button{padding:4px 8px}
   body:not(.immersive):not(.chromeless) .stage-host{flex:1 1 0;min-height:0;height:auto;max-height:none}
   body:not(.immersive):not(.chromeless) #scene{width:auto;height:auto;max-width:100%;max-height:100%}
-  /* 横版 16:9: 宽高都自适应并受舞台双向约束, 避免单边拉伸变形 */
-  body.live-session:not(.immersive):not(.chromeless)[data-layout=landscape] #scene{width:auto;height:auto;max-width:100%;max-height:100%}
+  /* 横版 16:9: 宽高都自适应并受舞台双向约束, 避免单边拉伸变形。:not(.zoom) 让位给
+     下方 zoom 规则——本条特异性(0,4,2)更高, 不排除会永久压死放大态(实测 bug)。 */
+  body.live-session:not(.zoom):not(.immersive):not(.chromeless)[data-layout=landscape] #scene{width:auto;height:auto;max-width:100%;max-height:100%}
   body:not(.immersive):not(.chromeless) .transport{flex:0 0 auto;margin-top:8px;padding-top:8px;padding-bottom:10px}
   body:not(.immersive):not(.chromeless) input[type=range]{margin:10px 0}
-  /* 放大画布: 画布在舞台内滚动, 播放控制条常驻可见 */
-  body.zoom:not(.immersive):not(.chromeless) .stage-host{overflow:auto;align-items:flex-start}
+  /* 放大画布: 画布在舞台内滚动, 播放控制条常驻可见。
+     overscroll-behavior:contain 阻断触摸板惯性滚到边界后向祖先传染(页面/iframe 抖动)。 */
+  body.zoom:not(.immersive):not(.chromeless) .stage-host{overflow:auto;align-items:flex-start;overscroll-behavior:contain}
   body.zoom:not(.immersive):not(.chromeless) #scene{width:100%;height:auto;max-width:none;max-height:none}
 }
 @media(min-width:721px) and (max-height:820px){body:not(.immersive):not(.chromeless) .transport-bottom{display:none}}

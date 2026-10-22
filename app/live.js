@@ -172,7 +172,8 @@ export async function startLive(project={}) {
   function download(payload){const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='prompt-spider-session.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   $('#playBtn').addEventListener('click',()=>control({action:meta?.playback.mode==='paused'?'play':'pause'}));$('#restartBtn').addEventListener('click',()=>control({action:'restart'}));$('#followLiveBtn').addEventListener('click',()=>control({action:'follow_live'}));
   $('#wallSwitch').addEventListener('click',()=>{wallPref=wallPref==='wall'?'list':'wall';   // null 与 'list' 都是横向态: 首次点击总是切到词墙
-    try{localStorage.setItem('ps-live-layout',wallPref);}catch(error){}render(true);});
+    // 只持久化"非默认"偏好: 切回横向(默认视图)时清除, 避免测一遍开关就被记成显式偏好
+    try{wallPref==='wall'?localStorage.setItem('ps-live-layout','wall'):localStorage.removeItem('ps-live-layout');}catch(error){}render(true);});
   $('#timeline').addEventListener('input',event=>control({action:'seek',position:Number(event.target.value)}));$('#speed').addEventListener('change',event=>control({speed:Number(event.target.value)}));$('#loop').addEventListener('change',event=>control({loop:event.target.checked}));
   document.querySelectorAll('[data-live-route]').forEach(button=>button.addEventListener('click',()=>control({routeFilter:button.dataset.liveRoute})));
   $('#previousPage').addEventListener('click',()=>control({page:Math.max(0,visiblePage-1)}));$('#nextPage').addEventListener('click',()=>control({page:visiblePage+1}));
