@@ -62,7 +62,7 @@ export class LiveRenderer {
     if(wall)this.editorFade(area,theme,placed,scroll);
     if(layout.stream)this.stream(view,layout.stream,theme);
     this.stats(view,layout.stats,theme);
-    if(layout.probes)this.probes(view,layout.probes,theme,config);   // landscape 专属: 参考演示底部四格探针带
+    if(layout.probes)this.probes(view,layout.probes,theme,config,routeFilter,reducedMotion);   // landscape 专属: 参考演示底部四格探针带
     this.text(`${config.unit.toUpperCase()} MODE   /   ${view.status.toUpperCase()}   /   ${view.at.toFixed(2)} s`,40,layout.height-18,theme.muted,10);
     this.text('真实事件 · 由 Agent 主动上报',layout.width-40,layout.height-18,theme.accent,10,'right');
     this.drawInteractionLayer(layout);
@@ -229,8 +229,10 @@ export class LiveRenderer {
   }
   // landscape 四格探针带(参考演示底排同款): 分数轨迹 / 事件点阵 / 覆盖率球 / 分支账本。
   // 数据全部来自 view 现成字段; 分数未上报只标注、不虚构; 点阵与分数点注册进 regions, 可点可 hover。
-  probes(view,boxes,t,config){
-    const c=this.ctx,[scoreBox,dotsBox,sphereBox,routeBox]=boxes;
+  // routeFilter 淡化与主场景/参考演示同语义(非命中淡化到 .19, 仍可点); reducedMotion 冻结球旋转。
+  probes(view,boxes,t,config,routeFilter='all',reducedMotion=false){
+     const c=this.ctx,visible=e=>routeFilter==='all'||e.route===routeFilter;
+     const [scoreBox,dotsBox,sphereBox,routeBox]=boxes;
     // ① 分数轨迹(参考 confidence · last 40): 折线 + 分支色点 + avg。
     this.panel(scoreBox,'SCORE · THIS PAGE',t,'ONE POINT = ONE EVENT');
     const scored=view.events.filter(e=>typeof e.score==='number');
@@ -239,7 +241,7 @@ export class LiveRenderer {
     if(scored.length){
       const pts=scored.map((e,i)=>({x:gx+(scored.length===1?gw/2:i/(scored.length-1)*gw),y:gy+(1-Math.max(0,Math.min(1,e.score)))*gh,e}));
       c.beginPath();pts.forEach((p,i)=>i?c.lineTo(p.x,p.y):c.moveTo(p.x,p.y));c.strokeStyle=t.accent;c.lineWidth=1.2;c.stroke();
-      for(const p of pts){c.fillStyle=config.routes[p.e.route].color;c.fillRect(p.x-1.8,p.y-1.8,3.6,3.6);
+      for(const p of pts){c.globalAlpha=visible(p.e)?1:.19;cFill(c,p.x-1.8,p.y-1.8,3.6,3.6,config.routes[p.e.route].color);c.globalAlpha=1;
         this.regions.push({event:p.e,x:p.x-6,y:p.y,w:12,h:14});}   // hitEvent 语义: y=中心, 非顶边
       this.text(`avg ${(scored.reduce((s,e)=>s+e.score,0)/scored.length).toFixed(3)} · ${scored.length} scored`,gx,scoreBox.y+scoreBox.h-14,t.text,10.5,'left',true);
     }else this.text('分数未上报 · 不猜测',gx,gy+gh/2,t.muted,11);
@@ -249,7 +251,8 @@ export class LiveRenderer {
     const maxDots=cols*Math.floor((dotsBox.h-70)/17);   // 超出框容量的事件不画不注册(页标签已示总数), 防溢出压线
     view.events.slice(0,maxDots).forEach((e,i)=>{
       const x=sx+i%cols*stepX,y=sy+Math.floor(i/cols)*17,pending=e.status==='pending';
-      c.globalAlpha=pending?.35:1;c.fillStyle=e.status==='failed'?t.accent:config.routes[e.route].color;
+      c.globalAlpha=(pending?.35:1)*(visible(e)?1:.19);
+      c.fillStyle=e.status==='failed'?t.accent:config.routes[e.route].color;
       c.beginPath();c.arc(x,y,pending?2.4:3.4,0,Math.PI*2);c.fill();c.globalAlpha=1;
       this.regions.push({event:e,x:x-6,y,w:12,h:14});});   // hitEvent 语义: y=中心
     this.text(`${view.events.length} / ${view.totalEvents} events`,sx,dotsBox.y+dotsBox.h-14,t.text,10.5,'left',true);
@@ -257,7 +260,7 @@ export class LiveRenderer {
     this.panel(sphereBox,'COMPLETION COVERAGE',t,'3d');
     const cx=sphereBox.x+sphereBox.w/2,cy=sphereBox.y+sphereBox.h/2+6,radius=Math.min(sphereBox.w,sphereBox.h)*.29;
     const coverage=view.totalEvents?Math.min(1,(view.statusCounts.completed||0)/view.totalEvents):0;
-    const spin=(Number.isFinite(view.at)?view.at:0)*.085,points=[];
+    const spin=reducedMotion?.4:(Number.isFinite(view.at)?view.at:0)*.085,points=[];
     for(let i=0;i<320;i++){const yy=1-(i+.5)/320*2,ring=Math.sqrt(1-yy*yy),a=i*Math.PI*(3-Math.sqrt(5));
       const xx=Math.cos(a)*ring,zz=Math.sin(a)*ring;
       const x=xx*Math.cos(spin)+zz*Math.sin(spin),z=-xx*Math.sin(spin)+zz*Math.cos(spin);
@@ -270,13 +273,15 @@ export class LiveRenderer {
       const size=p.z>.5?2.4:1.8;c.fillRect(x-size/2,y-size/2,size,size*.65);}
     c.globalAlpha=1;
     this.text(`${Math.round(coverage*100)}% completed · ${view.statusCounts.completed||0}/${view.totalEvents}`,sphereBox.x+14,sphereBox.y+sphereBox.h-14,t.text,10.5,'left',true);
-    // ④ 分支账本(参考 who had to think): 每条分支计数 + 占比条。
+    // ④ 分支账本(参考 who had to think): 每条分支计数 + 占比条; 过滤时非命中行淡化。
     this.panel(routeBox,'ROUTED BY BRANCH',t);
     ROUTES.forEach((route,i)=>{const y=routeBox.y+58+i*27,color=config.routes[route].color;
+      c.globalAlpha=routeFilter==='all'||route===routeFilter?1:.19;
       c.fillStyle=color;c.fillRect(routeBox.x+14,y-9,4,15);
       this.text(this.label(config.routes[route].label,130),routeBox.x+26,y,t.text,11);
       this.text(view.counts[route]??0,routeBox.x+routeBox.w-14,y,color,12,'right',true);
-      cFill(c,routeBox.x+26,y+5,Math.max(1,(routeBox.w-54)*(view.counts[route]??0)/Math.max(1,view.totalEvents)),3,color);});
+      cFill(c,routeBox.x+26,y+5,Math.max(1,(routeBox.w-54)*(view.counts[route]??0)/Math.max(1,view.totalEvents)),3,color);
+      c.globalAlpha=1;});
     this.text('分支由 Agent 上报决定 · 未上报不猜测',routeBox.x+14,routeBox.y+routeBox.h-14,t.muted,10);
   }
   stream(view,rect,t){this.panel(rect,'RECENT / EVENT DETAILS',t,'CLICK TASK TO INSPECT');const rows=view.events.slice(-Math.floor((rect.h-45)/29));for(let i=0;i<rows.length;i++){const e=rows[i],y=rect.y+55+i*29,color=view.config.routes[e.route].color;this.text(this.label(e.label,rect.w*.52),rect.x+13,y,t.text,11);this.text(STATUS[e.status],rect.x+rect.w*.60,y,color,10);this.text(e.score===null||e.score===undefined?'分数未提供':Number(e.score).toFixed(3),rect.x+rect.w-13,y,t.muted,10,'right');}}
