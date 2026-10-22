@@ -246,7 +246,8 @@ export class LiveRenderer {
     // ② 事件点阵(参考 words read): 一页最多 32 事件, 三行铺开, pending 淡色、failed 用品红。
     this.panel(dotsBox,'EVENT DOTS',t,'CLICK DOT TO INSPECT');
     const cols=15,sx=dotsBox.x+16,sy=dotsBox.y+54,stepX=(dotsBox.w-32)/(cols-1);
-    view.events.forEach((e,i)=>{
+    const maxDots=cols*Math.floor((dotsBox.h-70)/17);   // 超出框容量的事件不画不注册(页标签已示总数), 防溢出压线
+    view.events.slice(0,maxDots).forEach((e,i)=>{
       const x=sx+i%cols*stepX,y=sy+Math.floor(i/cols)*17,pending=e.status==='pending';
       c.globalAlpha=pending?.35:1;c.fillStyle=e.status==='failed'?t.accent:config.routes[e.route].color;
       c.beginPath();c.arc(x,y,pending?2.4:3.4,0,Math.PI*2);c.fill();c.globalAlpha=1;
